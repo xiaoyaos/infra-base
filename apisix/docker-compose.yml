@@ -8,7 +8,7 @@ services:
       - ./dashboard_conf/conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml
       # - ./dashboard_conf/schema.json:/usr/local/apisix-dashboard/conf/schema.json
     ports:
-      - "19000:9000"
+      - "9010:9000"
     networks:
       - project_net
 
@@ -21,12 +21,12 @@ services:
     depends_on:
       - etcd
     ##network_mode: host
-    ports:
-      - "9180:9180/tcp"
-      - "9080:9080/tcp"
-      - "9091:9091/tcp"
-      - "9443:9443/tcp"
-      - "9092:9092/tcp"
+    # ports:
+    #   - "9180:9180/tcp"
+    #   - "9080:9080/tcp"
+    #   - "9091:9091/tcp"
+    #   - "9443:9443/tcp"
+    #   - "9092:9092/tcp"
     networks:
       - project_net
 
@@ -40,8 +40,8 @@ services:
       ALLOW_NONE_AUTHENTICATION: "yes"
       ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
       ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
-    ports:
-      - "2379:2379/tcp"
+    # ports:
+    #   - "2379:2379/tcp"
     networks:
       - project_net
 

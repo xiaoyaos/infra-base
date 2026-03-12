@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+print_help() {
+  cat <<'USAGE'
+用法:
+  docker-ps -p <project>
+
+示例:
+  docker-ps -p myproject
+USAGE
+}
+
+PROJECT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--project)
+      PROJECT="${2:-}"; shift 2 ;;
+    -h|--help)
+      print_help; exit 0 ;;
+    *)
+      echo "[docker-ps] 未知参数: $1" >&2
+      print_help
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$PROJECT" ]; then
+  print_help
+  echo ""
+  echo "当前已存在的 compose 项目:"
+  docker compose ls --format json 2>/dev/null \
+    | awk -F'"Name":"' '{for(i=2;i<=NF;i++){split($i,a,"\""); print a[1]}}' \
+    | sort -u || true
+  exit 0
+fi
+
+docker ps --filter "label=com.docker.compose.project=${PROJECT}"

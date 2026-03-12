@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-echo "[install] 安装完成，准备启动 infra-base..."
 read -r -p "请输入项目名称 (用于 docker compose project name): " PROJECT_NAME
 if [ -z "$PROJECT_NAME" ]; then
     echo "[install] 项目名称不能为空" >&2
@@ -11,7 +10,7 @@ fi
 OS_VERSION="$(grep -oP '^PRETTY_NAME="\K[^"]+' /etc/os-release)"
 
 # 判断操作系统类型
-if [[ "$OS_VERSION" == *"CentOS"* ]]; then
+if [[ "$OS_VERSION" == *"CentOS"* || "$OS_VERSION" == *"Rocky"* ]]; then
     echo "当前为 CentOS 系统: $OS_VERSION"
     
 elif [[ "$OS_VERSION" == *"Ubuntu"* ]]; then
@@ -64,6 +63,14 @@ else
     sudo systemctl enable --now docker
 fi
 
+# 安装 docker-ps 工具
+if [ -f "./docker-ps" ]; then
+    sudo cp ./docker-ps /usr/local/bin/docker-ps
+    sudo chmod +x /usr/local/bin/docker-ps
+else
+    echo "[install] 未找到 ./docker-ps，跳过安装 docker-ps"
+fi
+
 # 检查docker-compose是否安装
 # MACHINE_ARCH="$(arch)"
 # echo "MACHINE_ARCH $MACHINE_ARCH"
@@ -89,8 +96,15 @@ fi
 cp docker_daemon.json /etc/docker/daemon.json
 
 # 重启docker
-echo Restart docker...
-sudo systemctl daemon-reload
-sudo systemctl restart docker
+read -r -p "是否重启 Docker 以使 daemon.json 生效? (y/N): " RESTART_DOCKER
+if [[ "$RESTART_DOCKER" =~ ^[Yy]$ ]]; then
+  echo Restart docker...
+  sudo systemctl daemon-reload
+  sudo systemctl restart docker
+else
+  echo "已跳过重启 Docker，daemon.json 变更需重启后生效"
+fi
+
+echo "[install] 安装完成，准备启动 infra-base..."
 
 sh start.sh "$PROJECT_NAME"

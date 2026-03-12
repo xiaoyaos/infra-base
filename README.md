@@ -11,6 +11,24 @@ infra-base 是面向项目交付的通用基础设施底座，提供主流中间
 ```sh
 # 一键安装并启动
 sh install.sh
+
+# 卸载
+sh uninstall.sh
+```
+
+## 业务服务一键部署
+用于部署订单、设备管理等业务服务（提前提供镜像与 docker-compose 文件）。
+```sh
+# 指定项目名
+sh deploy_services.sh -p <project> -f /path/to/order/docker-compose.yml
+```
+
+业务 compose 需绑定外部网络（建议使用环境变量）：
+```yaml
+networks:
+  default:
+    external: true
+    name: ${NETWORK_NAME}
 ```
 
 ## 中间件与组件
