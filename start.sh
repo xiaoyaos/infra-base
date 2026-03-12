@@ -14,6 +14,7 @@ if [ -z "$PROJECT_NAME" ]; then
 fi
 
 export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
+export NETWORK_NAME="${NETWORK_NAME:-infra-base-${COMPOSE_PROJECT_NAME}}"
 
 echo "[start] 生成服务端口清单..."
 "$SCRIPT_DIR/generate_services.sh"
@@ -45,10 +46,10 @@ COMPOSE_BIN="$(compose_cmd)" || {
   exit 1
 }
 
-$SUDO docker network inspect infra-base_net >/dev/null 2>&1 || \
-  $SUDO docker network create infra-base_net
+$SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || \
+  $SUDO docker network create "$NETWORK_NAME"
 
-echo "[start] 启动 infra-base (project: $COMPOSE_PROJECT_NAME)..."
+echo "[start] 启动 infra-base (project: $COMPOSE_PROJECT_NAME, network: $NETWORK_NAME)..."
 cd "$SCRIPT_DIR"
 $COMPOSE_BIN up -d
 

@@ -280,7 +280,7 @@
         <div class="title">infra-base 服务与端口总览</div>
         <p class="sub">聚合基础服务入口与管理端口，统一可视化展示。</p>
         <div class="meta">
-          <div class="pill">统一网络: infra-base_net</div>
+          <div class="pill" id="network-pill">统一网络: -</div>
           <div class="pill" id="host-pill">HOST: <span id="host">-</span></div>
           <button class="pill button" id="refresh-btn" type="button">刷新端口清单</button>
           <div class="pill mono" id="updated-pill">更新时间: -</div>
@@ -416,12 +416,14 @@
       const mgmt = services.filter(s => s.category === 'management');
       const portTotal = services.reduce((n, s) => n + (s.ports?.length || 0), 0);
       const generatedAt = data.generated_at || '-';
+      const networkName = data.network_name || '-';
 
       document.getElementById('svc-count').textContent = services.length;
       document.getElementById('port-count').textContent = portTotal;
       document.getElementById('mgmt-count').textContent = mgmt.length;
       document.getElementById('access-count').textContent = access.length;
       document.getElementById('updated-pill').textContent = `更新时间: ${generatedAt}`;
+      document.getElementById('network-pill').textContent = `统一网络: ${networkName}`;
 
       document.getElementById('access-list').innerHTML = access.map(cardTemplate).join('');
       document.getElementById('mgmt-list').innerHTML = mgmt.map(cardTemplate).join('');

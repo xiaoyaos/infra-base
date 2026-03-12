@@ -10,7 +10,7 @@ services:
     ports:
       - "19000:9000"
     networks:
-      - infra-base
+      - project_net
 
   apisix:
     image: apache/apisix:${APISIX_IMAGE_TAG:-3.10.0-debian}
@@ -28,7 +28,7 @@ services:
       - "9443:9443/tcp"
       - "9092:9092/tcp"
     networks:
-      - infra-base
+      - project_net
 
   etcd:
     image: bitnami/etcd:3.4.15
@@ -43,12 +43,12 @@ services:
     ports:
       - "2379:2379/tcp"
     networks:
-      - infra-base
+      - project_net
 
 networks:
-  infra-base:
+  project_net:
     external: true
-    name: infra-base_net
+    name: ${NETWORK_NAME}
 
 volumes:
   etcd_data:

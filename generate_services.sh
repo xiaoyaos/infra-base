@@ -18,8 +18,9 @@ if [ ! -f "$APISIX_COMPOSE" ]; then
 fi
 
 GENERATED_AT="$(date +"%Y-%m-%d %H:%M:%S %Z")"
+NETWORK_NAME="${NETWORK_NAME:-}"
 
-awk -v generated_at="$GENERATED_AT" '
+awk -v generated_at="$GENERATED_AT" -v network_name="$NETWORK_NAME" '
 function port_protocol(port) {
   if (port==80 || port==3001) return "http";
   if (port==443 || port==9443) return "https";
@@ -108,6 +109,7 @@ BEGIN { in_ports=0; svc=""; }
 END {
   print "{";
   print "  \"generated_at\": \"" generated_at "\",";
+  print "  \"network_name\": \"" network_name "\",";
   print "  \"services\": [";
 
   first=1;

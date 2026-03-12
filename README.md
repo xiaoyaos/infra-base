@@ -14,7 +14,20 @@ sh install.sh
 ```
 
 ## 中间件与组件
-nginx、redis、mongodb、postgres、mysql、minio、emqx、grafana、promtail、loki、apisix（apisix-dashboard）
+- Nginx 入口与控制台
+  容器：`nginx`（统一入口/静态首页/反向代理）
+- 缓存与队列
+  容器：`redis`（缓存/队列）
+- 关系型数据库
+  容器：`tsdb`（PostgreSQL，业务数据/时序数据存储）
+- 对象存储
+  容器：`minio`（S3 兼容对象存储与控制台）
+- MQTT 消息服务
+  容器：`emqx`（MQTT Broker 与管理控制台）
+- API 网关
+  容器：`apisix`（网关数据面）
+  容器：`apisix-dashboard`（管理控制台）
+  容器：`etcd`（配置存储）
 
 ## 管理端与外部接入地址
 请直接访问infra-base控制台，页面包含所有服务的管理入口与外部接入端口：
