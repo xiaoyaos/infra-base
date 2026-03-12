@@ -45,10 +45,10 @@ COMPOSE_BIN="$(compose_cmd)" || {
   exit 1
 }
 
-$SUDO docker network inspect base_hub_net >/dev/null 2>&1 || \
-  $SUDO docker network create base_hub_net
+$SUDO docker network inspect infra-base_net >/dev/null 2>&1 || \
+  $SUDO docker network create infra-base_net
 
-echo "[start] 启动 base_hub (project: $COMPOSE_PROJECT_NAME)..."
+echo "[start] 启动 infra-base (project: $COMPOSE_PROJECT_NAME)..."
 cd "$SCRIPT_DIR"
 $COMPOSE_BIN up -d
 

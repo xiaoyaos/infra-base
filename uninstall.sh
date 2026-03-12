@@ -47,6 +47,6 @@ cd "$SCRIPT_DIR/apisix"
 $COMPOSE_BIN down
 
 
-echo "[uninstall] 停止并删除 base_hub (project: $COMPOSE_PROJECT_NAME)..."
+echo "[uninstall] 停止并删除 infra-base (project: $COMPOSE_PROJECT_NAME)..."
 cd "$SCRIPT_DIR"
 $COMPOSE_BIN down

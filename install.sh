@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-echo "[install] 安装完成，准备启动 base_hub..."
+echo "[install] 安装完成，准备启动 infra-base..."
 read -r -p "请输入项目名称 (用于 docker compose project name): " PROJECT_NAME
 if [ -z "$PROJECT_NAME" ]; then
     echo "[install] 项目名称不能为空" >&2
