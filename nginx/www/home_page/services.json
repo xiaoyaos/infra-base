@@ -1,0 +1,110 @@
+{
+  "generated_at": "2026-03-11T09:34:44Z",
+  "services": [
+    {
+      "name": "tsdb",
+      "category": "access",
+      "ports": [
+        {"host_port": "5432", "container_port": "5432", "mapping": "5432->5432", "protocol": "postgres", "desc": "数据库客户端连接"}
+      ]
+    }
+,
+    {
+      "name": "redis",
+      "category": "access",
+      "ports": [
+        {"host_port": "6379", "container_port": "6379", "mapping": "6379->6379", "protocol": "redis", "desc": "缓存/队列客户端连接"}
+      ]
+    }
+,
+    {
+      "name": "nginx",
+      "category": "access",
+      "ports": [
+        {"host_port": "443", "container_port": "443", "mapping": "443->443", "protocol": "https", "desc": "HTTPS 入口"}
+,
+        {"host_port": "3001", "container_port": "80", "mapping": "3001->80", "protocol": "http", "desc": "HTTP 入口"}
+,
+        {"host_port": "80", "container_port": "80", "mapping": "80->80", "protocol": "http", "desc": "HTTP 入口"}
+      ]
+    }
+,
+    {
+      "name": "minio",
+      "category": "access",
+      "ports": [
+        {"host_port": "9000", "container_port": "9000", "mapping": "9000->9000", "protocol": "http", "desc": "S3 API 访问"}
+      ]
+    }
+,
+    {
+      "name": "emqx",
+      "category": "access",
+      "ports": [
+        {"host_port": "1883", "container_port": "1883", "mapping": "1883->1883", "protocol": "tcp", "desc": "MQTT TCP"}
+,
+        {"host_port": "8081", "container_port": "8081", "mapping": "8081->8081", "protocol": "http", "desc": "HTTP API/监控"}
+,
+        {"host_port": "8083", "container_port": "8083", "mapping": "8083->8083", "protocol": "ws", "desc": "MQTT WebSocket"}
+,
+        {"host_port": "8883", "container_port": "8883", "mapping": "8883->8883", "protocol": "ssl", "desc": "MQTT TLS"}
+,
+        {"host_port": "8084", "container_port": "8084", "mapping": "8084->8084", "protocol": "wss", "desc": "MQTT WSS"}
+      ]
+    }
+,
+    {
+      "name": "apisix",
+      "category": "access",
+      "ports": [
+        {"host_port": "9080", "container_port": "9080", "mapping": "9080->9080", "protocol": "http", "desc": "网关 HTTP 入口"}
+,
+        {"host_port": "9091", "container_port": "9091", "mapping": "9091->9091", "protocol": "tcp", "desc": "服务端口"}
+,
+        {"host_port": "9443", "container_port": "9443", "mapping": "9443->9443", "protocol": "https", "desc": "网关 HTTPS 入口"}
+,
+        {"host_port": "9092", "container_port": "9092", "mapping": "9092->9092", "protocol": "tcp", "desc": "服务端口"}
+      ]
+    }
+,
+    {
+      "name": "etcd",
+      "category": "access",
+      "ports": [
+        {"host_port": "2379", "container_port": "2379", "mapping": "2379->2379", "protocol": "http", "desc": "客户端/API 访问"}
+      ]
+    }
+,
+    {
+      "name": "minio",
+      "category": "management",
+      "ports": [
+        {"host_port": "9001", "container_port": "9001", "mapping": "9001->9001", "protocol": "http", "desc": "控制台/管理界面"}
+      ]
+    }
+,
+    {
+      "name": "emqx",
+      "category": "management",
+      "ports": [
+        {"host_port": "18083", "container_port": "18083", "mapping": "18083->18083", "protocol": "http", "desc": "控制台/管理界面"}
+      ]
+    }
+,
+    {
+      "name": "apisix-dashboard",
+      "category": "management",
+      "ports": [
+        {"host_port": "19000", "container_port": "9000", "mapping": "19000->9000", "protocol": "http", "desc": "Dashboard 管理界面"}
+      ]
+    }
+,
+    {
+      "name": "apisix",
+      "category": "management",
+      "ports": [
+        {"host_port": "9180", "container_port": "9180", "mapping": "9180->9180", "protocol": "http", "desc": "管理 API"}
+      ]
+    }
+  ]
+}

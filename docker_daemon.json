@@ -1,0 +1,15 @@
+{
+  "registry-mirrors": [
+  	"https://f46b4b67e7e94782bf1416f7cfbaf35d.mirror.swr.myhuaweicloud.com",
+    "https://v33f0naj.mirror.aliyuncs.com",
+    "https://docker.1ms.run",
+    "https://hub.rat.dev",
+    "https://docker.1panel.live"
+  ],
+  "default-address-pools": [
+    {
+      "base": "10.100.100.0/16",
+      "size": 24
+    }
+  ]
+} 
