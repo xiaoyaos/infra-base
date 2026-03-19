@@ -84,6 +84,30 @@ services:
       - 18083:18083
     networks:
       - project_net
+  mongo:
+    image: "mongo:latest"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 500M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200M"
+        max-file: "1"
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: uj123456
+    volumes:
+      - ./config/mongo:/etc/mongo
+      - ./production_data/mongo:/data/db
+    ports:
+      - 17017:27017
+    networks:
+      - project_net
+    command: mongod -f /etc/mongo/mongod.conf
 networks:
   project_net:
     external: true
