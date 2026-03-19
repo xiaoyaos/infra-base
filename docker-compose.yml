@@ -52,7 +52,7 @@ services:
         max-size: '500m'
         max-file: '1'
   minio:
-    image: minio/minio
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
     restart: always
     privileged: true
     ports:
