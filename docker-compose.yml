@@ -22,7 +22,7 @@ services:
         max-file: '1'
   redis:
     restart: always
-    image: redis:6.0.10
+    image: redis:6.2.6
     ports:
       - 6379:6379
     volumes:
