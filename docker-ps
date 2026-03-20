@@ -4,21 +4,104 @@ set -euo pipefail
 
 print_help() {
   cat <<'USAGE'
-用法:
-  docker-ps -p <project>
+docker-ps
 
-示例:
+用法:
+  1) 列表模式
+     docker-ps -p <project>
+
+  2) 日志模式
+     docker-ps logs [-p <project>] [service_or_container]
+
+日志模式默认行为:
+  - 默认目标: server
+  - 固定参数: --tail 100 -t -f
+  - 等价命令: docker logs --tail 100 -t -f <target>
+
+常用示例:
   docker-ps -p myproject
+  docker-ps logs
+  docker-ps logs server
+  docker-ps logs -p myproject
+  docker-ps logs -p myproject server
 USAGE
 }
+
+run_logs() {
+  local project=""
+  local target="server"
+  local target_set=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--project)
+        project="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        print_help
+        exit 0
+        ;;
+      -*)
+        echo "[docker-ps] logs 模式未知参数: $1" >&2
+        print_help
+        exit 1
+        ;;
+      *)
+        if [ "$target_set" -eq 0 ]; then
+          target="$1"
+          target_set=1
+          shift
+        else
+          echo "[docker-ps] logs 模式仅支持一个目标参数，收到: $1" >&2
+          print_help
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  local container="$target"
+  if [ -n "$project" ]; then
+    local by_service
+    by_service="$(docker ps -a \
+      --filter "label=com.docker.compose.project=${project}" \
+      --filter "label=com.docker.compose.service=${target}" \
+      --format '{{.ID}}' | head -n 1 || true)"
+
+    if [ -n "$by_service" ]; then
+      container="$by_service"
+    else
+      local by_name
+      by_name="$(docker ps -a \
+        --filter "label=com.docker.compose.project=${project}" \
+        --filter "name=${target}" \
+        --format '{{.ID}}' | head -n 1 || true)"
+      if [ -n "$by_name" ]; then
+        container="$by_name"
+      fi
+    fi
+  fi
+
+  exec docker logs --tail 100 -t -f "$container"
+}
+
+if [ "${1:-}" = "logs" ]; then
+  shift
+  run_logs "$@"
+fi
 
 PROJECT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--project)
-      PROJECT="${2:-}"; shift 2 ;;
+      PROJECT="${2:-}"
+      shift 2
+      ;;
     -h|--help)
-      print_help; exit 0 ;;
+      print_help
+      exit 0
+      ;;
     *)
       echo "[docker-ps] 未知参数: $1" >&2
       print_help
