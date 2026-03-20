@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if command -v docker-x >/dev/null 2>&1; then
+  DOCKER_X_BIN="$(command -v docker-x)"
+elif [ -x "$HOME/.docker/cli-plugins/docker-x" ]; then
+  DOCKER_X_BIN="$HOME/.docker/cli-plugins/docker-x"
+elif [ -x "$SCRIPT_DIR/docker-x" ]; then
+  DOCKER_X_BIN="$SCRIPT_DIR/docker-x"
+else
+  echo "[docker-ps] 未找到 docker-x，请先安装 docker-x" >&2
+  exit 1
+fi
+
+echo "[docker-ps] 已迁移，请使用: docker x ..." >&2
+exec "$DOCKER_X_BIN" --help

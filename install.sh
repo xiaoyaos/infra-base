@@ -63,12 +63,23 @@ else
     sudo systemctl enable --now docker
 fi
 
-# 安装 docker-ps 工具
-if [ -f "./docker-ps" ]; then
-    sudo cp ./docker-ps /usr/local/bin/docker-ps
-    sudo chmod +x /usr/local/bin/docker-ps
+# 安装 docker x 插件与兼容命令
+if [ -f "./dockerx/docker-x" ]; then
+    mkdir -p "$HOME/.docker/cli-plugins"
+    cp ./dockerx/docker-x "$HOME/.docker/cli-plugins/docker-x"
+    chmod +x "$HOME/.docker/cli-plugins/docker-x"
+    echo "[install] 已安装 docker-x 到 $HOME/.docker/cli-plugins/docker-x"
+    echo "[install] 可使用: docker x ps / docker x logs"
 else
-    echo "[install] 未找到 ./docker-ps，跳过安装 docker-ps"
+    echo "[install] 未找到 ./dockerx/docker-x，跳过安装 docker-x"
+fi
+
+if [ -f "./dockerx/docker-ps" ]; then
+    sudo cp ./dockerx/docker-ps /usr/local/bin/docker-ps
+    sudo chmod +x /usr/local/bin/docker-ps
+    echo "[install] 已安装 docker-ps 兼容命令（内部转发到 docker-x）"
+else
+    echo "[install] 未找到 ./dockerx/docker-ps，跳过安装 docker-ps"
 fi
 
 # 检查docker-compose是否安装

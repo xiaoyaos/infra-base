@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+print_metadata() {
+  cat <<'JSON'
+{"SchemaVersion":"0.1.0","Vendor":"uJoin","Version":"1.0.0","ShortDescription":"Infra helper: project ps/logs shortcuts"}
+JSON
+}
+
+print_help() {
+  cat <<'USAGE'
+docker x
+
+用法:
+  docker x ps <project>
+  docker x logs <service_or_container>
+  docker x logs <project> <service_or_container>
+
+说明:
+  ps   查看 compose project 容器列表
+  logs 快速查看日志（容器/服务名必填，project 可选）
+
+logs 默认行为:
+  docker logs --tail 100 -t -f <target>
+
+示例:
+  docker x ps myproject
+  docker x logs dev-nginx-1
+  docker x logs myproject server
+USAGE
+}
+
+print_ps_help() {
+  cat <<'USAGE'
+用法:
+  docker x ps <project>
+USAGE
+}
+
+print_logs_help() {
+  cat <<'USAGE'
+用法:
+  docker x logs <service_or_container>
+  docker x logs <project> <service_or_container>
+
+规则:
+  - 容器/服务名必填
+  - project 可选（传入后会按 compose project + service 优先定位）
+  - 固定参数: --tail 100 -t -f
+USAGE
+}
+
+run_ps() {
+  local project="${1:-}"
+  if [ -z "$project" ]; then
+    print_ps_help
+    echo ""
+    echo "当前已存在的 compose 项目:"
+    docker compose ls --format json 2>/dev/null \
+      | awk -F'"Name":"' '{for(i=2;i<=NF;i++){split($i,a,"\""); print a[1]}}' \
+      | sort -u || true
+    exit 0
+  fi
+
+  if [ "$project" = "-h" ] || [ "$project" = "--help" ] || [ "$project" = "help" ]; then
+    print_ps_help
+    exit 0
+  fi
+
+  if [[ "$project" == -* ]]; then
+    echo "[docker-x] ps 模式不再支持 -p，请使用: docker x ps <project>" >&2
+    print_ps_help
+    exit 1
+  fi
+
+  if [ "$#" -ne 1 ]; then
+    echo "[docker-x] ps 模式仅支持一个 project 参数" >&2
+    print_ps_help
+    exit 1
+  fi
+
+  exec docker ps --filter "label=com.docker.compose.project=${project}"
+}
+
+run_logs() {
+  local project=""
+  local target=""
+
+  if [ $# -eq 0 ]; then
+    print_logs_help
+    exit 0
+  fi
+
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ]; then
+    print_logs_help
+    exit 0
+  fi
+
+  if [[ "${1:-}" == -* ]]; then
+    echo "[docker-x] logs 模式不再支持 -p，请使用: docker x logs <service> 或 docker x logs <project> <service>" >&2
+    print_logs_help
+    exit 1
+  fi
+
+  if [ "$#" -gt 2 ]; then
+    echo "[docker-x] logs 模式参数过多，请使用: docker x logs <service> 或 docker x logs <project> <service>" >&2
+    print_logs_help
+    exit 1
+  fi
+
+  if [ "$#" -eq 1 ]; then
+    target="$1"
+  else
+    project="$1"
+    target="$2"
+  fi
+
+  local container="$target"
+
+  if [ -n "$project" ]; then
+    local by_service
+    by_service="$(docker ps -a \
+      --filter "label=com.docker.compose.project=${project}" \
+      --filter "label=com.docker.compose.service=${target}" \
+      --format '{{.ID}}' | head -n 1 || true)"
+
+    if [ -n "$by_service" ]; then
+      container="$by_service"
+    else
+      local by_name
+      by_name="$(docker ps -a \
+        --filter "label=com.docker.compose.project=${project}" \
+        --filter "name=${target}" \
+        --format '{{.ID}}' | head -n 1 || true)"
+      if [ -n "$by_name" ]; then
+        container="$by_name"
+      fi
+    fi
+  fi
+
+  exec docker logs --tail 100 -t -f "$container"
+}
+
+if [ "${1:-}" = "docker-cli-plugin-metadata" ]; then
+  print_metadata
+  exit 0
+fi
+
+# docker CLI 插件调用时，可能会把插件名作为第一个参数传入（例如: x）
+if [ "${1:-}" = "x" ]; then
+  shift
+fi
+
+subcmd="${1:-}"
+if [ -z "$subcmd" ]; then
+  print_help
+  exit 0
+fi
+shift
+
+case "$subcmd" in
+  ps)
+    run_ps "$@"
+    ;;
+  logs)
+    run_logs "$@"
+    ;;
+  -h|--help|help)
+    print_help
+    ;;
+  *)
+    echo "[docker-x] 未知子命令: $subcmd" >&2
+    print_help
+    exit 1
+    ;;
+esac
