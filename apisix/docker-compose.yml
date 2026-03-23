@@ -8,7 +8,7 @@ services:
       - ./dashboard_conf/conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml
       # - ./dashboard_conf/schema.json:/usr/local/apisix-dashboard/conf/schema.json
     ports:
-      - "9010:9000"
+      - "${APISIX_DASHBOARD_PORT:-9000}:9000"
     networks:
       - project_net
 

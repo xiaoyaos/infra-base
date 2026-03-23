@@ -3,6 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+INFRA_SELECTED=""
+APISIX_SELECTED=""
 
 PROJECT_NAME="${1:-}"
 if [ -z "$PROJECT_NAME" ]; then
@@ -17,7 +20,7 @@ export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
 export NETWORK_NAME="${NETWORK_NAME:-infra-base-${COMPOSE_PROJECT_NAME}}"
 
 echo "[start] 生成服务端口清单..."
-"$SCRIPT_DIR/generate_services.sh"
+"$SCRIPT_DIR/scripts/generate_services.sh"
 
 SUDO=""
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -104,18 +107,79 @@ collect_host_ports() {
   }' "$file"
 }
 
+env_value() {
+  local key="$1"
+  local default="${2:-}"
+  if [ -f "$ENV_FILE" ]; then
+    local v
+    v="$(awk -F= -v k="$key" '$1==k{print substr($0,index($0,"=")+1); exit}' "$ENV_FILE")"
+    if [ -n "$v" ]; then
+      echo "$v"
+      return 0
+    fi
+  fi
+  echo "$default"
+}
+
+is_enabled() {
+  local key="$1"
+  local v
+  v="$(env_value "$key" "true")"
+  case "$v" in
+    true|TRUE|True|1|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+build_selected_services() {
+  INFRA_SELECTED=""
+  APISIX_SELECTED=""
+
+  is_enabled "ENABLE_TSDB" && INFRA_SELECTED="$INFRA_SELECTED tsdb"
+  is_enabled "ENABLE_REDIS" && INFRA_SELECTED="$INFRA_SELECTED redis"
+  is_enabled "ENABLE_NGINX" && INFRA_SELECTED="$INFRA_SELECTED nginx"
+  is_enabled "ENABLE_MINIO" && INFRA_SELECTED="$INFRA_SELECTED minio"
+  is_enabled "ENABLE_EMQX" && INFRA_SELECTED="$INFRA_SELECTED emqx"
+  is_enabled "ENABLE_MONGO" && INFRA_SELECTED="$INFRA_SELECTED mongo"
+
+  if is_enabled "ENABLE_ETCD"; then
+    APISIX_SELECTED="$APISIX_SELECTED etcd"
+  fi
+  if is_enabled "ENABLE_APISIX"; then
+    APISIX_SELECTED="$APISIX_SELECTED apisix"
+    if ! is_enabled "ENABLE_ETCD"; then
+      echo "[start] 检测到 ENABLE_APISIX=true 且 ENABLE_ETCD!=true，自动补启 etcd"
+      APISIX_SELECTED="$APISIX_SELECTED etcd"
+    fi
+  fi
+  if is_enabled "ENABLE_APISIX_DASHBOARD"; then
+    APISIX_SELECTED="$APISIX_SELECTED apisix-dashboard"
+  fi
+}
+
 changed_services_for_compose() {
   local file="$1"
   local services hashes
-  services="$($COMPOSE_BIN -f "$file" config --services 2>/dev/null || true)"
+  if [ -f "$ENV_FILE" ]; then
+    services="$($COMPOSE_BIN --env-file "$ENV_FILE" -f "$file" config --services 2>/dev/null || true)"
+  else
+    services="$($COMPOSE_BIN -f "$file" config --services 2>/dev/null || true)"
+  fi
   if [ -z "$services" ]; then
     echo "__ALL__"
     return 0
   fi
-  hashes="$(echo "$services" | while read -r s; do
-    [ -z "$s" ] && continue
-    $COMPOSE_BIN -f "$file" config --hash "$s" 2>/dev/null
-  done)"
+  if [ -f "$ENV_FILE" ]; then
+    hashes="$(echo "$services" | while read -r s; do
+      [ -z "$s" ] && continue
+      $COMPOSE_BIN --env-file "$ENV_FILE" -f "$file" config --hash "$s" 2>/dev/null
+    done)"
+  else
+    hashes="$(echo "$services" | while read -r s; do
+      [ -z "$s" ] && continue
+      $COMPOSE_BIN -f "$file" config --hash "$s" 2>/dev/null
+    done)"
+  fi
   if [ -z "$hashes" ]; then
     echo "__ALL__"
     return 0
@@ -155,19 +219,36 @@ changed_services_for_compose() {
 
 check_ports_in_compose() {
   local file="$1"
+  local forced_services="${2:-}"
   local services
-  services="$(changed_services_for_compose "$file")"
-  if [ "$services" = "__ALL__" ]; then
-    services="$($COMPOSE_BIN -f "$file" config --services 2>/dev/null || true)"
+  if [ -n "$forced_services" ]; then
+    services="$(echo "$forced_services" | xargs -n1)"
+  else
+    services="$(changed_services_for_compose "$file")"
+    if [ "$services" = "__ALL__" ]; then
+      if [ -f "$ENV_FILE" ]; then
+        services="$($COMPOSE_BIN --env-file "$ENV_FILE" -f "$file" config --services 2>/dev/null || true)"
+      else
+        services="$($COMPOSE_BIN -f "$file" config --services 2>/dev/null || true)"
+      fi
+    fi
   fi
   if [ -z "$services" ]; then
     echo "[start] 未检测到需要变更的服务，跳过端口检查: $file"
     return 0
   fi
+  local resolved_file
+  resolved_file="$(mktemp)"
+  if [ -f "$ENV_FILE" ]; then
+    $COMPOSE_BIN --env-file "$ENV_FILE" -f "$file" config > "$resolved_file"
+  else
+    $COMPOSE_BIN -f "$file" config > "$resolved_file"
+  fi
   local targets_csv
   targets_csv="$(echo "$services" | paste -sd, -)"
   local ports
-  ports="$(collect_host_ports "$file" "$targets_csv" | sort -u)"
+  ports="$(collect_host_ports "$resolved_file" "$targets_csv" | sort -u)"
+  rm -f "$resolved_file"
   if [ -z "$ports" ]; then
     return 0
   fi
@@ -182,16 +263,34 @@ check_ports_in_compose() {
   return $blocked
 }
 
-check_ports_in_compose "$SCRIPT_DIR/docker-compose.yml" || exit 1
-check_ports_in_compose "$SCRIPT_DIR/apisix/docker-compose.yml" || exit 1
+build_selected_services
+
+check_ports_in_compose "$SCRIPT_DIR/docker-compose.yml" "$INFRA_SELECTED" || exit 1
+check_ports_in_compose "$SCRIPT_DIR/apisix/docker-compose.yml" "$APISIX_SELECTED" || exit 1
 
 $SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || \
   $SUDO docker network create "$NETWORK_NAME"
 
 echo "[start] 启动 infra-base (project: $COMPOSE_PROJECT_NAME, network: $NETWORK_NAME)..."
 cd "$SCRIPT_DIR"
-$COMPOSE_BIN up -d
+if [ -n "$INFRA_SELECTED" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    $COMPOSE_BIN --env-file "$ENV_FILE" up -d $INFRA_SELECTED
+  else
+    $COMPOSE_BIN up -d $INFRA_SELECTED
+  fi
+else
+  echo "[start] 未选择 infra-base 容器，跳过 infra-base 启动"
+fi
 
 echo "[start] 启动 apisix (project: $COMPOSE_PROJECT_NAME)..."
 cd "$SCRIPT_DIR/apisix"
-$COMPOSE_BIN up -d
+if [ -n "$APISIX_SELECTED" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    $COMPOSE_BIN --env-file "$ENV_FILE" up -d $APISIX_SELECTED
+  else
+    $COMPOSE_BIN up -d $APISIX_SELECTED
+  fi
+else
+  echo "[start] 未选择 apisix 容器，跳过 apisix 启动"
+fi

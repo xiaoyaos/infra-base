@@ -10,7 +10,7 @@ print_usage() {
   ./deploy_services.sh -p <项目名> -n <网络名> -f <compose文件> [-f <compose文件> ...]
 
 示例:
-  ./deploy_services.sh -p demo -n infra-base_net -f /path/to/order/docker-compose.yml -f /path/to/device/docker-compose.yml
+  ./deploy_services.sh -p demo -n infra-base-<项目名> -f /path/to/order/docker-compose.yml -f /path/to/device/docker-compose.yml
 
 说明:
   - 会创建指定网络(如不存在)

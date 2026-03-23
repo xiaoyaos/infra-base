@@ -3,10 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_FILE="$SCRIPT_DIR/nginx/www/home_page/services.json"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUT_FILE="$BASE_DIR/nginx/www/home_page/services.json"
 
-BASE_COMPOSE="$SCRIPT_DIR/docker-compose.yml"
-APISIX_COMPOSE="$SCRIPT_DIR/apisix/docker-compose.yml"
+BASE_COMPOSE="$BASE_DIR/docker-compose.yml"
+APISIX_COMPOSE="$BASE_DIR/apisix/docker-compose.yml"
 
 if [ ! -f "$BASE_COMPOSE" ]; then
   echo "[generate] 未找到 $BASE_COMPOSE" >&2

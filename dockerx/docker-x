@@ -119,6 +119,18 @@ run_logs() {
   local container="$target"
 
   if [ -n "$project" ]; then
+    local project_count
+    project_count="$(docker ps -a --filter "label=com.docker.compose.project=${project}" -q | wc -l | tr -d ' ' || true)"
+    if [ "${project_count:-0}" = "0" ]; then
+      echo "[docker-x] 未找到 compose 项目: ${project}" >&2
+      echo "" >&2
+      echo "当前已存在的 compose 项目:" >&2
+      docker compose ls --format json 2>/dev/null \
+        | awk -F'"Name":"' '{for(i=2;i<=NF;i++){split($i,a,"\""); print a[1]}}' \
+        | sort -u >&2 || true
+      exit 1
+    fi
+
     local by_service
     by_service="$(docker ps -a \
       --filter "label=com.docker.compose.project=${project}" \

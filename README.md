@@ -1,29 +1,37 @@
 # infra-base 基础设施底座
-infra-base 是面向项目交付的通用基础设施底座，提供主流中间件与基础服务的标准化容器编排能力。通过统一网络与规范化部署方式，实现多套环境隔离与可预测运维，支撑研发、测试与演示环境的快速落地。
+infra-base 用于统一提供项目运行所需的基础中间件与网关能力，支持按 `compose project` 隔离多套环境。
 
-## 定位与价值
-- 统一提供常见中间件与基础服务，降低重复建设与配置成本
-- 按项目部署，多环境并行运行，满足开发、测试、演示等场景
-- 统一可控网络，避免环境互相干扰，保障容器通信可预测
-- 依赖集中化管理，减少启动与维护成本，缩短项目启动周期
-
-## 使用方式
+## 核心入口
 ```sh
-# 一键安装并启动
+# 安装/部署（交互式）
 sh install.sh
 
-# 卸载
-sh uninstall.sh
+# 卸载指定环境
+sh uninstall.sh <project>
+
+# 部署业务服务到 infra-base 网络
+sh deploy_services.sh -p <project> -f /path/to/service-compose.yml
+
+# 部署后健康检查/验收
+sh scripts/check.sh --project <project>
 ```
 
-## 业务服务一键部署
-用于部署订单、设备管理等业务服务（提前提供镜像与 docker-compose 文件）。
-```sh
-# 指定项目名
-sh deploy_services.sh -p <project> -f /path/to/order/docker-compose.yml
-```
+## install.sh 说明
+`install.sh` 是主入口，支持 3 种模式：
+- `1) base`：仅基础环境安装与启动
+- `2) full`：从零部署 + 数据恢复
+- `3) restore`：仅恢复数据
 
-业务 compose 需绑定外部网络（建议使用环境变量）：
+关键交互行为：
+- `mode`：不传 `--mode` 时，交互式选择
+- 项目名：会校验是否冲突（已存在会要求重输）
+- 统一密码：必填，写入 `.env` 的 `COMMON_PASSWORD`
+- 服务创建：逐容器选择是否创建
+- 端口输入：仅对“选择创建”的容器输入端口，并实时检测占用
+
+## 业务网络要求
+业务服务 compose 需要挂入 infra-base 外部网络：
+
 ```yaml
 networks:
   default:
@@ -31,50 +39,42 @@ networks:
     name: ${NETWORK_NAME}
 ```
 
-## 中间件与组件
-- Nginx 入口与控制台
-  容器：`nginx`（统一入口/静态首页/反向代理）
-- 缓存与队列
-  容器：`redis`（缓存/队列）
-- 关系型数据库
-  容器：`tsdb`（PostgreSQL，业务数据/时序数据存储）
-- 对象存储
-  容器：`minio`（S3 兼容对象存储与控制台）
-- MQTT 消息服务
-  容器：`emqx`（MQTT Broker 与管理控制台）
-- API 网关
-  容器：`apisix`（网关数据面）
-  容器：`apisix-dashboard`（管理控制台）
-  容器：`etcd`（配置存储）
+## 迁移相关
+迁移打包/恢复流程请查看：
+- [migration.md](/Users/hejiajun/ujoin/workspace/packages/infra-base/migration.md)
 
-## 管理端与外部接入地址
-请直接访问infra-base控制台，页面包含所有服务的管理入口与外部接入端口：
+健康检查/验收说明请查看：
+- [health-check.md](/Users/hejiajun/ujoin/workspace/packages/infra-base/health-check.md)
 
-- `http://<HOST>:80/`
-- `http://<HOST>:3001/`
-- `https://<HOST>:443/`
+## 主要组件
+- `nginx`：统一入口与静态资源
+- `redis`：缓存/队列
+- `tsdb`：PostgreSQL/TimescaleDB
+- `minio`：对象存储
+- `mongo`：文档数据库
+- `emqx`：MQTT
+- `apisix` + `apisix-dashboard` + `etcd`：网关与配置
 
 ## 目录说明
 ```sh
 infra-base
-├── apisix                     # apisix 网关
-│   ├── apisix
-│   ├── apisix_conf
-│   ├── dashboard_conf
-│   └── docker-compose.yml     # apisix docker compose配置
-├── nginx                      # nginx 入口与首页
-│   ├── cert                   # 证书目录
-│   ├── location.conf          # 路由/反向代理配置
-│   ├── nginx.conf             # nginx 主配置
-│   └── www
-│       └── home_page          # 服务入口首页
-│           ├── favicon.svg
-│           ├── index.html
-│           └── services.json
-├── docker-compose.yml         # infra-base docker compose配置
+├── apisix/                    # APISIX 相关配置与 compose
+├── config/                    # 组件配置目录
+├── dockerx/                   # docker x 扩展与兼容命令
+├── nginx/                     # nginx 配置与静态页面
+├── scripts/                   # 非入口脚本
+│   ├── migration.sh           # 交互式迁移打包
+│   ├── restore.sh             # 交互式恢复
+│   ├── init_sample_data.sh    # 测试数据初始化/清理
+│   ├── generate_services.sh   # 生成 services.json
+│   └── check.sh               # 健康检查/验收脚本
+├── migration_bundle/          # 迁移包输出目录（按版本）
+├── migration.md               # 迁移操作手册
+├── health-check.md            # 健康检查说明
+├── docker-compose.yml         # infra-base compose
 ├── docker_daemon.json         # docker daemon 配置模板
-├── generate_services.sh       # 生成 services.json
-├── install.sh                 # 一键安装与启动
-├── start.sh                   # 启动脚本
-└── uninstall.sh               # 停止并删除容器
+├── deploy_services.sh         # 业务服务部署入口
+├── install.sh                 # 安装主入口
+├── start.sh                   # 启动入口
+└── uninstall.sh               # 卸载入口
 ```
