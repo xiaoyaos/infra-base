@@ -16,8 +16,9 @@ flowchart TD
   G --> H
   H -->|1 raw| I["使用 production_data 覆盖恢复"]
   H -->|2 logical| J["使用 data/logical 逻辑恢复"]
-  I --> K["健康检查"]
-  J --> K
+  I --> X["恢复 services/ 目录(如存在)"]
+  J --> X
+  X --> K["健康检查"]
 ```
 
 ## 2. 打包步骤（源机）
@@ -72,7 +73,7 @@ sh scripts/migration.sh
 执行命令：
 
 ```bash
-sh install.sh
+sh infractl.sh
 ```
 
 ### 4.1 模式选择（数字输入）
@@ -99,15 +100,20 @@ infra-base
         ├── config/
         ├── dockerx/
         ├── nginx/
-        ├── install.sh
-        ├── start.sh
+        ├── infractl.sh              # 根目录统一入口
         ├── scripts/
+        │   ├── install.sh
+        │   ├── start.sh
+        │   ├── uninstall.sh
+        │   ├── deploy_services.sh
         │   ├── migration.sh
         │   ├── restore.sh
         │   ├── init_sample_data.sh
         │   └── generate_services.sh
         ├── docker-compose.yml
         ├── docker_daemon.json
+        ├── services/                # 业务服务目录（按源机原样复制）
+        │   └── <service>/docker-compose.yml
         ├── production_data/          # 仅当备份模式含 raw 时存在
         │   ├── tsdb/                 # 可按交互勾选
         │   ├── mongo/

@@ -3,10 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODE=""
 PROJECT_NAME=""
-BUNDLE_DIR="$SCRIPT_DIR"
+BUNDLE_DIR="$BASE_DIR"
 RESTORE_SOURCE=""
 COMMON_PASSWORD="${COMMON_PASSWORD:-}"
 SELECTED_PORTS=""
@@ -16,7 +17,7 @@ LAST_BOOL=""
 usage() {
   cat <<'USAGE'
 用法:
-  sh install.sh [--mode base|full|restore] [--project <name>] [--bundle <path>] [--source raw|logical|1|2] [--password <pwd>]
+  sh scripts/install.sh [--mode base|full|restore] [--project <name>] [--bundle <path>] [--source raw|logical|1|2] [--password <pwd>]
 
 模式说明:
   --mode base     仅执行基础环境初始化并启动 infra-base
@@ -25,7 +26,7 @@ usage() {
 
 参数说明:
   --project       compose 项目名
-  --bundle        迁移包目录(默认当前目录)
+  --bundle        迁移包目录(默认 infra-base 根目录)
   --source        恢复源(raw/logical 或 1/2)，不指定时按备份内容动态交互选择
   --password      统一密码(不传则交互输入，必填)
 
@@ -112,10 +113,72 @@ write_common_password_env() {
   set_env_var "COMMON_PASSWORD" "$COMMON_PASSWORD"
 }
 
+register_infra_base_env() {
+  local profile_file="/etc/profile.d/custom.sh"
+  local begin_mark="# >>> infra-base >>>"
+  local end_mark="# <<< infra-base <<<"
+  local tmp_file
+  local sudo_cmd=""
+
+  if [ "${EUID:-$(id -u)}" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+    sudo_cmd="sudo"
+  fi
+
+  if [ "${EUID:-$(id -u)}" -ne 0 ] && [ -z "$sudo_cmd" ]; then
+    echo "[install] 无法写入 $profile_file（当前非 root 且无 sudo），跳过全局变量注册" >&2
+    return 0
+  fi
+
+  tmp_file="$(mktemp)"
+
+  if [ -f "$profile_file" ]; then
+    awk -v b="$begin_mark" -v e="$end_mark" '
+      $0==b {skip=1; next}
+      $0==e {skip=0; next}
+      skip!=1 {print}
+    ' "$profile_file" > "$tmp_file"
+  fi
+
+  cat >> "$tmp_file" <<EOF_ENV
+$begin_mark
+export INFRA_BASE_HOME="$BASE_DIR"
+case ":\$PATH:" in
+  *":\$INFRA_BASE_HOME:"*) ;;
+  *) export PATH="\$PATH:\$INFRA_BASE_HOME" ;;
+esac
+$end_mark
+EOF_ENV
+
+  $sudo_cmd mkdir -p /etc/profile.d
+  $sudo_cmd cp "$tmp_file" "$profile_file"
+  $sudo_cmd chmod 644 "$profile_file"
+  rm -f "$tmp_file"
+
+  echo "[install] 已写入全局变量: $profile_file (INFRA_BASE_HOME=$BASE_DIR)"
+}
+
+init_services_dir() {
+  local services_dir="$BASE_DIR/services"
+  local sudo_cmd=""
+
+  mkdir -p "$services_dir"
+  echo "[install] 已初始化目录: $services_dir"
+
+  if [ "${EUID:-$(id -u)}" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+    sudo_cmd="sudo"
+  fi
+
+  if ! $sudo_cmd chown -R gitlab-runner:gitlab-runner "$services_dir" >/dev/null 2>&1; then
+    echo "[install] 警告: 授权失败，已跳过 chown -R gitlab-runner:gitlab-runner $services_dir" >&2
+  else
+    echo "[install] 目录授权完成: gitlab-runner:gitlab-runner $services_dir"
+  fi
+}
+
 set_env_var() {
   local key="$1"
   local val="$2"
-  local env_file="$SCRIPT_DIR/.env"
+  local env_file="$BASE_DIR/.env"
   touch "$env_file"
   if grep -q "^${key}=" "$env_file" 2>/dev/null; then
     sed -i.bak "s|^${key}=.*|${key}=${val}|" "$env_file" && rm -f "$env_file.bak"
@@ -379,9 +442,9 @@ EOF_DOCKER_REPO
     sudo systemctl enable --now docker
   fi
 
-  if [ -f "$SCRIPT_DIR/dockerx/docker-x" ]; then
+  if [ -f "$BASE_DIR/dockerx/docker-x" ]; then
     mkdir -p "$HOME/.docker/cli-plugins"
-    cp "$SCRIPT_DIR/dockerx/docker-x" "$HOME/.docker/cli-plugins/docker-x"
+    cp "$BASE_DIR/dockerx/docker-x" "$HOME/.docker/cli-plugins/docker-x"
     chmod +x "$HOME/.docker/cli-plugins/docker-x"
     echo "[install] 已安装 docker-x 到 $HOME/.docker/cli-plugins/docker-x"
     echo "[install] 可使用: docker x ps / docker x logs"
@@ -389,8 +452,8 @@ EOF_DOCKER_REPO
     echo "[install] 未找到 ./dockerx/docker-x，跳过安装 docker-x"
   fi
 
-  if [ -f "$SCRIPT_DIR/dockerx/docker-ps" ]; then
-    sudo cp "$SCRIPT_DIR/dockerx/docker-ps" /usr/local/bin/docker-ps
+  if [ -f "$BASE_DIR/dockerx/docker-ps" ]; then
+    sudo cp "$BASE_DIR/dockerx/docker-ps" /usr/local/bin/docker-ps
     sudo chmod +x /usr/local/bin/docker-ps
     echo "[install] 已安装 docker-ps 兼容命令（内部转发到 docker-x）"
   else
@@ -403,7 +466,7 @@ EOF_DOCKER_REPO
   else
     echo 'daemon.json does not exist.'
   fi
-  sudo cp "$SCRIPT_DIR/docker_daemon.json" /etc/docker/daemon.json
+  sudo cp "$BASE_DIR/docker_daemon.json" /etc/docker/daemon.json
 
   read -r -p "是否重启 Docker 以使 daemon.json 生效? (y/N): " RESTART_DOCKER
   if [[ "$RESTART_DOCKER" =~ ^[Yy]$ ]]; then
@@ -429,20 +492,45 @@ load_images_from_bundle() {
 }
 
 run_restore() {
-  if [ ! -x "$SCRIPT_DIR/scripts/restore.sh" ]; then
-    echo "[install] 未找到 restore.sh: $SCRIPT_DIR/scripts/restore.sh" >&2
+  if [ ! -x "$BASE_DIR/scripts/restore.sh" ]; then
+    echo "[install] 未找到 restore.sh: $BASE_DIR/scripts/restore.sh" >&2
     exit 1
   fi
 
   if [ -n "$PROJECT_NAME" ] && [ -n "$RESTORE_SOURCE" ]; then
-    "$SCRIPT_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --project "$PROJECT_NAME" --source "$RESTORE_SOURCE"
+    "$BASE_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --project "$PROJECT_NAME" --source "$RESTORE_SOURCE"
   elif [ -n "$PROJECT_NAME" ]; then
-    "$SCRIPT_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --project "$PROJECT_NAME"
+    "$BASE_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --project "$PROJECT_NAME"
   elif [ -n "$RESTORE_SOURCE" ]; then
-    "$SCRIPT_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --source "$RESTORE_SOURCE"
+    "$BASE_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images --source "$RESTORE_SOURCE"
   else
-    "$SCRIPT_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images
+    "$BASE_DIR/scripts/restore.sh" --bundle "$BUNDLE_DIR" --password "$COMMON_PASSWORD" --skip-images
   fi
+}
+
+sync_dir_contents() {
+  local src="$1"
+  local dst="$2"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$src/" "$dst/"
+  else
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    tar -C "$src" -cf - . | tar -C "$dst" -xf -
+  fi
+}
+
+restore_services_dir() {
+  local src="$BUNDLE_DIR/services"
+  local dst="$BASE_DIR/services"
+  if [ ! -d "$src" ]; then
+    echo "[install] 未找到 services 备份目录，跳过恢复: $src"
+    return 0
+  fi
+
+  echo "[install] 恢复 services 目录: $src -> $dst"
+  mkdir -p "$dst"
+  sync_dir_contents "$src" "$dst"
 }
 
 normalize_restore_source() {
@@ -463,6 +551,7 @@ detect_restore_source_mode() {
   [ -d "$BUNDLE_DIR/production_data" ] && has_raw="true"
   [ -d "$BUNDLE_DIR/data/raw/production_data" ] && has_raw="true"
   if [ -f "$BUNDLE_DIR/data/logical/pg_dumpall.sql" ] || \
+     [ -f "$BUNDLE_DIR/data/logical/pg/globals.sql" ] || \
      [ -f "$BUNDLE_DIR/data/logical/mongo.archive.gz" ] || \
      [ -d "$BUNDLE_DIR/data/logical/minio" ]; then
     has_logical="true"
@@ -522,8 +611,10 @@ main() {
       write_common_password_env
       prompt_ports_for_base
       install_docker_and_runtime
+      register_infra_base_env
+      init_services_dir
       echo "[install] 安装完成，准备启动 infra-base..."
-      sh "$SCRIPT_DIR/start.sh" "$PROJECT_NAME"
+      bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
       ;;
 
     full)
@@ -536,6 +627,8 @@ main() {
       write_common_password_env
       prompt_ports_for_base
       install_docker_and_runtime
+      register_infra_base_env
+      init_services_dir
       load_images_from_bundle
 
       if [ -z "$RESTORE_SOURCE" ]; then
@@ -546,15 +639,16 @@ main() {
       if [ "$RESTORE_SOURCE" = "raw" ]; then
         run_restore
         echo "[install] 恢复完成，准备启动 infra-base..."
-        sh "$SCRIPT_DIR/start.sh" "$PROJECT_NAME"
+        bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
       elif [ "$RESTORE_SOURCE" = "logical" ]; then
         echo "[install] 先启动 infra-base，再执行 logical 恢复..."
-        sh "$SCRIPT_DIR/start.sh" "$PROJECT_NAME"
+        bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
         run_restore
       else
         echo "[install] 无效的恢复源: $RESTORE_SOURCE" >&2
         exit 1
       fi
+      restore_services_dir
       ;;
 
     restore)

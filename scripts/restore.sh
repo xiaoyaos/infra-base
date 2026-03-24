@@ -37,7 +37,7 @@ usage() {
   sh scripts/restore.sh [--bundle <path>] [--project <name>] [--source raw|logical] [--password <pwd>] [--yes] [--skip-images]
 
 说明:
-  --bundle   迁移包目录，默认当前脚本目录
+  --bundle   迁移包目录，默认 infra-base 根目录
   --project  compose 项目名(逻辑恢复时必填)
   --source   指定恢复源(raw 或 logical)，不指定则交互式选择
   --password 统一密码(不传则交互输入，必填)
@@ -516,7 +516,7 @@ main() {
       ;;
   esac
 
-  log "恢复完成，建议执行: sh $BASE_DIR/start.sh <project_name> 以确保服务状态正确"
+  log "恢复完成，建议执行: sh $BASE_DIR/scripts/start.sh <project_name> 以确保服务状态正确"
 }
 
 main "$@"

@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="$BASE_DIR/.env"
 INFRA_SELECTED=""
 APISIX_SELECTED=""
 
@@ -20,7 +21,7 @@ export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
 export NETWORK_NAME="${NETWORK_NAME:-infra-base-${COMPOSE_PROJECT_NAME}}"
 
 echo "[start] 生成服务端口清单..."
-"$SCRIPT_DIR/scripts/generate_services.sh"
+"$BASE_DIR/scripts/generate_services.sh"
 
 SUDO=""
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -30,7 +31,7 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[start] 未找到 docker，请先运行 install.sh" >&2
+  echo "[start] 未找到 docker，请先运行 infractl.sh" >&2
   exit 1
 fi
 
@@ -265,14 +266,14 @@ check_ports_in_compose() {
 
 build_selected_services
 
-check_ports_in_compose "$SCRIPT_DIR/docker-compose.yml" "$INFRA_SELECTED" || exit 1
-check_ports_in_compose "$SCRIPT_DIR/apisix/docker-compose.yml" "$APISIX_SELECTED" || exit 1
+check_ports_in_compose "$BASE_DIR/docker-compose.yml" "$INFRA_SELECTED" || exit 1
+check_ports_in_compose "$BASE_DIR/apisix/docker-compose.yml" "$APISIX_SELECTED" || exit 1
 
 $SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || \
   $SUDO docker network create "$NETWORK_NAME"
 
 echo "[start] 启动 infra-base (project: $COMPOSE_PROJECT_NAME, network: $NETWORK_NAME)..."
-cd "$SCRIPT_DIR"
+cd "$BASE_DIR"
 if [ -n "$INFRA_SELECTED" ]; then
   if [ -f "$ENV_FILE" ]; then
     $COMPOSE_BIN --env-file "$ENV_FILE" up -d $INFRA_SELECTED
@@ -284,7 +285,7 @@ else
 fi
 
 echo "[start] 启动 apisix (project: $COMPOSE_PROJECT_NAME)..."
-cd "$SCRIPT_DIR/apisix"
+cd "$BASE_DIR/apisix"
 if [ -n "$APISIX_SELECTED" ]; then
   if [ -f "$ENV_FILE" ]; then
     $COMPOSE_BIN --env-file "$ENV_FILE" up -d $APISIX_SELECTED

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SUDO=""
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -57,13 +58,11 @@ export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
 export NETWORK_NAME="${NETWORK_NAME:-infra-base-${COMPOSE_PROJECT_NAME}}"
 
 echo "[uninstall] 停止并删除 apisix (project: $COMPOSE_PROJECT_NAME)..."
-cd "$SCRIPT_DIR/apisix"
-$COMPOSE_BIN down
+$COMPOSE_BIN -f "$BASE_DIR/apisix/docker-compose.yml" down
 
 
 echo "[uninstall] 停止并删除 infra-base (project: $COMPOSE_PROJECT_NAME)..."
-cd "$SCRIPT_DIR"
-$COMPOSE_BIN down
+$COMPOSE_BIN -f "$BASE_DIR/docker-compose.yml" down
 
 echo "[uninstall] 删除网络: $NETWORK_NAME"
 $SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 && \
