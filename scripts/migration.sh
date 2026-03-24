@@ -495,6 +495,10 @@ EOF_MENU
     *) err "无效选项"; exit 1 ;;
   esac
 
+  if [ "$BACKUP_MODE" = "raw" ] || [ "$BACKUP_MODE" = "both" ]; then
+    log "提示: 选择 raw 数据迁移时，目标环境恢复必须使用源环境统一密码，不能指定新密码"
+  fi
+
   read -r -p "是否导出离线镜像? [y/N]: " IMAGE_CHOICE
   IMAGE_CHOICE="${IMAGE_CHOICE:-N}"
 

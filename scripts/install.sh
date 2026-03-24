@@ -109,6 +109,29 @@ prompt_common_password() {
   done
 }
 
+prompt_raw_source_password() {
+  local input=""
+  while :; do
+    read -r -s -p "请输入源环境统一密码(用于 raw 恢复后运行，必填): " input
+    echo
+    if [ -n "$input" ]; then
+      COMMON_PASSWORD="$input"
+      return 0
+    fi
+    echo "[install] 源环境统一密码不能为空，请重新输入" >&2
+  done
+}
+
+resolve_password_for_source() {
+  local source="$1"
+  if [ "$source" = "raw" ]; then
+    echo "[install] 提示: raw 恢复不支持指定新密码，必须使用源环境统一密码"
+    prompt_raw_source_password
+    return 0
+  fi
+  prompt_common_password
+}
+
 write_common_password_env() {
   set_env_var "COMMON_PASSWORD" "$COMMON_PASSWORD"
 }
@@ -586,8 +609,8 @@ detect_restore_source_mode() {
 
   cat <<'EOF_MENU'
 检测到 raw 与 logical 同时可用：
-  1) raw
-  2) logical
+  1) raw      (不支持指定新密码，需输入源环境统一密码)
+  2) logical  (可按当前环境输入统一密码)
 EOF_MENU
   while :; do
     read -r -p "请输入选项 [1/2]，默认 2(logical): " ans
@@ -623,8 +646,6 @@ main() {
         echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
         exit 1
       fi
-      prompt_common_password
-      write_common_password_env
       prompt_ports_for_base
       install_docker_and_runtime
       register_infra_base_env
@@ -635,6 +656,8 @@ main() {
         detect_restore_source_mode
       fi
       normalize_restore_source
+      resolve_password_for_source "$RESTORE_SOURCE"
+      write_common_password_env
 
       if [ "$RESTORE_SOURCE" = "raw" ]; then
         run_restore
@@ -656,7 +679,11 @@ main() {
         echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
         exit 1
       fi
-      prompt_common_password
+      if [ -z "$RESTORE_SOURCE" ]; then
+        detect_restore_source_mode
+      fi
+      normalize_restore_source
+      resolve_password_for_source "$RESTORE_SOURCE"
       write_common_password_env
       run_restore
       ;;

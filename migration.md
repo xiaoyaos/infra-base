@@ -90,6 +90,10 @@ sh infractl.sh
 - `1 raw`：用 `production_data` 覆盖目标机数据目录
 - `2 logical`：用 `data/logical` 恢复（跨环境更稳）
 
+密码规则：
+- `raw`：恢复时优先使用迁移包 `.env` 中的 `COMMON_PASSWORD`（建议与源环境保持一致）
+- `logical`：按目标环境输入的统一密码恢复
+
 ## 5. 目录结构示例
 
 ```sh

@@ -44,6 +44,7 @@ networks:
 说明：
 - 迁移包会包含 infra-base 根目录下的 `services/` 目录
 - `full` 模式会将迁移包内 `services/` 恢复到当前 infra-base 根目录
+- `raw` 恢复会优先使用迁移包 `.env` 中的 `COMMON_PASSWORD`（保持与源环境一致）
 
 健康检查/验收说明请查看：
 - [health-check.md](./health-check.md)

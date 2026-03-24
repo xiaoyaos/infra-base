@@ -40,7 +40,7 @@ usage() {
   --bundle   迁移包目录，默认 infra-base 根目录
   --project  compose 项目名(逻辑恢复时必填)
   --source   指定恢复源(raw 或 logical)，不指定则交互式选择
-  --password 统一密码(不传则交互输入，必填)
+  --password 统一密码(logical 恢复时使用；不传则交互输入)
   --yes      跳过覆盖确认(仍会创建恢复前备份)
   --skip-images 跳过离线镜像导入
 USAGE
@@ -421,7 +421,7 @@ choose_source_mode() {
   cat <<'EOF_MENU'
 检测到 raw(production_data) 与 logical 同时可用：
 请选择恢复源(输入 1 或 2，默认 2 logical):
-  1) raw：直接覆盖恢复 production_data
+  1) raw：直接覆盖恢复 production_data（不支持指定新密码，需使用源环境统一密码）
      适用：同版本、同架构、同部署结构迁移（速度快）
   2) logical：使用逻辑备份恢复(pg_dumpall/mongodump/mc)
      适用：跨环境或兼容性优先场景（更稳，默认推荐）
@@ -466,7 +466,6 @@ confirm_overwrite() {
 
 main() {
   parse_args "$@"
-  prompt_common_password
 
   [ -d "$BUNDLE_DIR" ] || { err "bundle 目录不存在: $BUNDLE_DIR"; exit 1; }
   command -v docker >/dev/null 2>&1 || { err "未找到 docker"; exit 1; }
@@ -504,6 +503,7 @@ main() {
       trap - EXIT
       ;;
     logical)
+      prompt_common_password
       if [ -z "$PROJECT_NAME" ]; then
         read -r -p "请输入项目名称(用于定位运行中的容器): " PROJECT_NAME
       fi

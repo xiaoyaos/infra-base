@@ -8,12 +8,15 @@ PG_DB="demo_db"
 PG_TABLE="demo_records"
 MONGO_DB="demo_db"
 MONGO_COLLECTION="demo_records"
+MINIO_BUCKET="demo-bucket"
 ROWS=100
 
 PG_USER="postgres"
 PG_PASSWORD=""
 MONGO_USER="admin"
 MONGO_PASSWORD=""
+MINIO_USER="minio"
+MINIO_PASSWORD=""
 COMMON_PASSWORD="${COMMON_PASSWORD:-}"
 
 usage() {
@@ -22,6 +25,7 @@ usage() {
   sh scripts/init_sample_data.sh [--project <name>] [--action init|clean|reset] [--rows <n>] [--password <pwd>]
                          [--pg-db <db>] [--pg-table <table>]
                          [--mongo-db <db>] [--mongo-collection <name>]
+                         [--minio-bucket <name>]
 
 示例:
   sh scripts/init_sample_data.sh --project test --rows 200
@@ -48,6 +52,8 @@ parse_args() {
         MONGO_DB="${2:-}"; shift 2 ;;
       --mongo-collection)
         MONGO_COLLECTION="${2:-}"; shift 2 ;;
+      --minio-bucket)
+        MINIO_BUCKET="${2:-}"; shift 2 ;;
       -h|--help)
         usage; exit 0 ;;
       *)
@@ -63,6 +69,7 @@ load_common_password() {
   if [ -n "$COMMON_PASSWORD" ]; then
     PG_PASSWORD="$COMMON_PASSWORD"
     MONGO_PASSWORD="$COMMON_PASSWORD"
+    MINIO_PASSWORD="$COMMON_PASSWORD"
     return 0
   fi
   return 1
@@ -74,11 +81,12 @@ prompt_common_password() {
   fi
   local input=""
   while :; do
-    read -r -s -p "请输入统一密码(用于 pg/mongodb，必填): " input
+    read -r -s -p "请输入统一密码(用于 pg/mongodb/minio，必填): " input
     echo
     if [ -n "$input" ]; then
       PG_PASSWORD="$input"
       MONGO_PASSWORD="$input"
+      MINIO_PASSWORD="$input"
       return 0
     fi
     echo "[init-data] 统一密码不能为空，请重新输入" >&2
@@ -197,13 +205,46 @@ EOF_JS
     --eval "$js"
 }
 
+init_minio() {
+  local minio_cid="$1"
+  local cmd
+  read -r -d '' cmd <<EOF_CMD || true
+set -e
+mc alias set local http://127.0.0.1:9000 "${MINIO_USER}" "${MINIO_PASSWORD}" >/dev/null
+mc mb --ignore-existing "local/${MINIO_BUCKET}" >/dev/null
+i=1
+while [ "\$i" -le "${ROWS}" ]; do
+  printf '%s\n' "sample-\$i-\$(date +%s)" | mc pipe "local/${MINIO_BUCKET}/sample_\$i.txt" >/dev/null
+  i=\$((i+1))
+done
+count=\$(mc ls --recursive "local/${MINIO_BUCKET}" | wc -l | tr -d ' ')
+echo "minio_count=\$count"
+EOF_CMD
+
+  echo "[init-data] 初始化 MinIO 桶: ${MINIO_BUCKET}"
+  docker exec "$minio_cid" sh -c "$cmd"
+}
+
+clean_minio() {
+  local minio_cid="$1"
+  local cmd
+  read -r -d '' cmd <<EOF_CMD || true
+mc alias set local http://127.0.0.1:9000 "${MINIO_USER}" "${MINIO_PASSWORD}" >/dev/null
+mc rb --force "local/${MINIO_BUCKET}" >/dev/null 2>&1 || true
+echo "minio_clean_done"
+EOF_CMD
+
+  echo "[init-data] 清理 MinIO 桶: ${MINIO_BUCKET}"
+  docker exec "$minio_cid" sh -c "$cmd"
+}
+
 main() {
   parse_args "$@"
   prompt_common_password
   require_cmd docker
 
   if [ -z "$PROJECT_NAME" ]; then
-    read -r -p "请输入项目名称(用于定位 tsdb/mongo 容器): " PROJECT_NAME
+    read -r -p "请输入项目名称(用于定位 tsdb/mongo/minio 容器): " PROJECT_NAME
   fi
   if [ -z "$PROJECT_NAME" ]; then
     echo "[init-data] 项目名称不能为空" >&2
@@ -221,9 +262,10 @@ main() {
     exit 1
   fi
 
-  local pg_cid mongo_cid
+  local pg_cid mongo_cid minio_cid
   pg_cid="$(container_by_service "$PROJECT_NAME" "tsdb")"
   mongo_cid="$(container_by_service "$PROJECT_NAME" "mongo")"
+  minio_cid="$(container_by_service "$PROJECT_NAME" "minio")"
 
   if [ -z "$pg_cid" ]; then
     echo "[init-data] 未找到 PostgreSQL 容器(tsdb)，请确认项目名和容器状态" >&2
@@ -233,21 +275,33 @@ main() {
     echo "[init-data] 未找到 MongoDB 容器(mongo)，请确认项目名和容器状态" >&2
     exit 1
   fi
+  if [ -z "$minio_cid" ]; then
+    echo "[init-data] 未找到 MinIO 容器(minio)，请确认项目名和容器状态" >&2
+    exit 1
+  fi
+  if ! docker exec "$minio_cid" sh -c "command -v mc >/dev/null 2>&1"; then
+    echo "[init-data] MinIO 容器内未找到 mc，无法创建样例桶/文件" >&2
+    exit 1
+  fi
 
   case "$ACTION" in
     init)
       init_pg "$pg_cid"
       init_mongo "$mongo_cid"
+      init_minio "$minio_cid"
       ;;
     clean)
       clean_pg "$pg_cid"
       clean_mongo "$mongo_cid"
+      clean_minio "$minio_cid"
       ;;
     reset)
       clean_pg "$pg_cid"
       clean_mongo "$mongo_cid"
+      clean_minio "$minio_cid"
       init_pg "$pg_cid"
       init_mongo "$mongo_cid"
+      init_minio "$minio_cid"
       ;;
   esac
   echo "[init-data] 全部完成"
