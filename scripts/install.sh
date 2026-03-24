@@ -97,7 +97,7 @@ EOF_MODE
 prompt_common_password() {
   if [ -n "$COMMON_PASSWORD" ]; then
     if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$COMMON_PASSWORD"; then
-      echo "[install] 统一密码长度必须大于 8，请重新输入" >&2
+      echo "[install] 统一密码长度必须大于等于 8，请重新输入" >&2
       COMMON_PASSWORD=""
     else
       return 0
@@ -109,7 +109,7 @@ prompt_common_password() {
     echo
     if [ -n "$input" ]; then
       if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$input"; then
-        echo "[install] 统一密码长度必须大于 8，请重新输入" >&2
+        echo "[install] 统一密码长度必须大于等于 8，请重新输入" >&2
         continue
       fi
       COMMON_PASSWORD="$input"
@@ -121,7 +121,7 @@ prompt_common_password() {
 
 password_meets_policy() {
   local pwd="$1"
-  [ "${#pwd}" -gt 8 ]
+  [ "${#pwd}" -ge 8 ]
 }
 
 prompt_raw_source_password() {
@@ -131,7 +131,7 @@ prompt_raw_source_password() {
     echo
     if [ -n "$input" ]; then
       if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$input"; then
-        echo "[install] 源环境统一密码长度必须大于 8，请重新输入" >&2
+        echo "[install] 源环境统一密码长度必须大于等于 8，请重新输入" >&2
         continue
       fi
       COMMON_PASSWORD="$input"
@@ -540,6 +540,24 @@ load_images_from_bundle() {
   fi
 }
 
+validate_bundle_dir() {
+  if [ ! -d "$BUNDLE_DIR" ]; then
+    echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
+    exit 1
+  fi
+
+  if [ ! -f "$BUNDLE_DIR/manifest.json" ]; then
+    echo "[install] 无效迁移包: 缺少 manifest.json ($BUNDLE_DIR/manifest.json)" >&2
+    echo "[install] 请先执行: sh scripts/migration.sh 生成迁移包，再使用 full/restore" >&2
+    exit 1
+  fi
+
+  if [ ! -d "$BUNDLE_DIR/production_data" ] && [ ! -d "$BUNDLE_DIR/data/logical" ]; then
+    echo "[install] 无效迁移包: 未找到可恢复数据目录(production_data 或 data/logical)" >&2
+    exit 1
+  fi
+}
+
 run_restore() {
   if [ ! -x "$BASE_DIR/scripts/restore.sh" ]; then
     echo "[install] 未找到 restore.sh: $BASE_DIR/scripts/restore.sh" >&2
@@ -670,10 +688,7 @@ main() {
     full)
       REQUIRE_STRONG_PASSWORD="true"
       choose_project_name
-      if [ ! -d "$BUNDLE_DIR" ]; then
-        echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
-        exit 1
-      fi
+      validate_bundle_dir
       prompt_ports_for_base
       install_docker_and_runtime
       register_infra_base_env
@@ -703,10 +718,7 @@ main() {
       ;;
 
     restore)
-      if [ ! -d "$BUNDLE_DIR" ]; then
-        echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
-        exit 1
-      fi
+      validate_bundle_dir
       if [ -z "$RESTORE_SOURCE" ]; then
         detect_restore_source_mode
       fi
