@@ -13,6 +13,7 @@ COMMON_PASSWORD="${COMMON_PASSWORD:-}"
 SELECTED_PORTS=""
 LAST_PORT=""
 LAST_BOOL=""
+REQUIRE_STRONG_PASSWORD="false"
 
 usage() {
   cat <<'USAGE'
@@ -95,18 +96,32 @@ EOF_MODE
 
 prompt_common_password() {
   if [ -n "$COMMON_PASSWORD" ]; then
-    return 0
+    if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$COMMON_PASSWORD"; then
+      echo "[install] 统一密码长度必须大于 8，请重新输入" >&2
+      COMMON_PASSWORD=""
+    else
+      return 0
+    fi
   fi
   local input=""
   while :; do
     read -r -s -p "请输入统一密码(用于 pg/mongodb/minio，必填): " input
     echo
     if [ -n "$input" ]; then
+      if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$input"; then
+        echo "[install] 统一密码长度必须大于 8，请重新输入" >&2
+        continue
+      fi
       COMMON_PASSWORD="$input"
       return 0
     fi
     echo "[install] 统一密码不能为空，请重新输入" >&2
   done
+}
+
+password_meets_policy() {
+  local pwd="$1"
+  [ "${#pwd}" -gt 8 ]
 }
 
 prompt_raw_source_password() {
@@ -115,6 +130,10 @@ prompt_raw_source_password() {
     read -r -s -p "请输入源环境统一密码(用于 raw 恢复后运行，必填): " input
     echo
     if [ -n "$input" ]; then
+      if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$input"; then
+        echo "[install] 源环境统一密码长度必须大于 8，请重新输入" >&2
+        continue
+      fi
       COMMON_PASSWORD="$input"
       return 0
     fi
@@ -401,15 +420,22 @@ install_docker_and_runtime() {
     pkg_mgr="dnf"
   fi
 
-  if [[ "$os_version" == *"CentOS"* || "$os_version" == *"Rocky"* ]]; then
-    echo "当前为 CentOS 系统: $os_version"
-  elif [[ "$os_version" == *"Ubuntu"* ]]; then
-    echo "当前为 Ubuntu 系统: $os_version"
-  else
-    echo "不支持的操作系统: $os_version"
-    echo "脚本退出"
-    exit 1
-  fi
+  case "$os_id" in
+    rocky)
+      echo "当前为 Rocky 系统: $os_version"
+      ;;
+    centos)
+      echo "当前为 CentOS 系统: $os_version"
+      ;;
+    ubuntu)
+      echo "当前为 Ubuntu 系统: $os_version"
+      ;;
+    *)
+      echo "不支持的操作系统: $os_version"
+      echo "脚本退出"
+      exit 1
+      ;;
+  esac
 
   if command -v docker >/dev/null 2>&1; then
     echo 'Docker is installed.'
@@ -629,6 +655,7 @@ main() {
 
   case "$MODE" in
     base)
+      REQUIRE_STRONG_PASSWORD="true"
       choose_project_name
       prompt_common_password
       write_common_password_env
@@ -641,6 +668,7 @@ main() {
       ;;
 
     full)
+      REQUIRE_STRONG_PASSWORD="true"
       choose_project_name
       if [ ! -d "$BUNDLE_DIR" ]; then
         echo "[install] bundle 目录不存在: $BUNDLE_DIR" >&2
