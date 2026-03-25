@@ -124,6 +124,41 @@ password_meets_policy() {
   [ "${#pwd}" -ge 8 ]
 }
 
+env_var_value() {
+  local key="$1"
+  local env_file="$BASE_DIR/.env"
+  if [ -f "$env_file" ]; then
+    awk -F= -v k="$key" '$1==k{print substr($0,index($0,"=")+1); exit}' "$env_file"
+  fi
+}
+
+prompt_env_password_if_missing() {
+  local key="$1"
+  local prompt="$2"
+  local existing input
+
+  existing="$(env_var_value "$key")"
+  if [ -n "$existing" ]; then
+    return 0
+  fi
+
+  while :; do
+    read -r -s -p "$prompt" input
+    echo
+    if [ -z "$input" ]; then
+      echo "[install] ${key} 不能为空，请重新输入" >&2
+      continue
+    fi
+    set_env_var "$key" "$input"
+    return 0
+  done
+}
+
+ensure_redis_acl_passwords() {
+  prompt_env_password_if_missing "APP_SUBSCRIBER_PASSWORD" "请输入 Redis app_subscriber 密码(必填): "
+  prompt_env_password_if_missing "SOCKET_SUBSCRIBER_PASSWORD" "请输入 Redis socket_subscriber 密码(必填): "
+}
+
 prompt_raw_source_password() {
   local input=""
   while :; do
@@ -300,6 +335,7 @@ prompt_ports_for_base() {
 
   prompt_enable_service "Redis(redis)"; set_env_var "ENABLE_REDIS" "$LAST_BOOL"
   if [ "$LAST_BOOL" = "true" ]; then
+    ensure_redis_acl_passwords
     prompt_single_port "REDIS_PORT" "Redis(redis)" "6379"; set_env_var "REDIS_PORT" "$LAST_PORT"
   fi
 

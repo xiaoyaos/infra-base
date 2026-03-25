@@ -122,6 +122,58 @@ env_value() {
   echo "$default"
 }
 
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\/&|]/\\&/g'
+}
+
+render_redis_config() {
+  if ! is_enabled "ENABLE_REDIS"; then
+    return 0
+  fi
+
+  local pwd
+  pwd="$(env_value "COMMON_PASSWORD" "")"
+  local app_sub_pwd
+  app_sub_pwd="$(env_value "APP_SUBSCRIBER_PASSWORD" "app_subscriber_password")"
+  local socket_sub_pwd
+  socket_sub_pwd="$(env_value "SOCKET_SUBSCRIBER_PASSWORD" "socket_subscriber_password")"
+  if [ -z "$pwd" ]; then
+    echo "[start] 缺少 COMMON_PASSWORD，无法渲染 Redis 配置" >&2
+    return 1
+  fi
+
+  local redis_dir="$BASE_DIR/config/redis"
+  local conf_tpl="$redis_dir/redis.conf.template"
+  local acl_tpl="$redis_dir/users.acl.template"
+  local conf_out="$redis_dir/redis.conf"
+  local acl_out="$redis_dir/users.acl"
+  local escaped
+  local escaped_app_sub_pwd
+  local escaped_socket_sub_pwd
+
+  if [ ! -f "$conf_tpl" ] || [ ! -f "$acl_tpl" ]; then
+    echo "[start] 缺少 Redis 模板文件: $conf_tpl 或 $acl_tpl" >&2
+    return 1
+  fi
+
+  mkdir -p "$redis_dir"
+  escaped="$(escape_sed_replacement "$pwd")"
+  escaped_app_sub_pwd="$(escape_sed_replacement "$app_sub_pwd")"
+  escaped_socket_sub_pwd="$(escape_sed_replacement "$socket_sub_pwd")"
+  sed "s|__COMMON_PASSWORD__|$escaped|g" "$conf_tpl" > "$conf_out"
+  sed -e "s|__COMMON_PASSWORD__|$escaped|g" \
+      -e "s|__APP_SUBSCRIBER_PASSWORD__|$escaped_app_sub_pwd|g" \
+      -e "s|__SOCKET_SUBSCRIBER_PASSWORD__|$escaped_socket_sub_pwd|g" \
+      "$acl_tpl" > "$acl_out"
+  if awk 'NF && $1 != "user" { exit 1 }' "$acl_out"; then
+    :
+  else
+    echo "[start] Redis ACL 文件不合法：非空行必须以 user 开头，请检查 $acl_tpl" >&2
+    return 1
+  fi
+  chmod 600 "$acl_out" >/dev/null 2>&1 || true
+}
+
 is_enabled() {
   local key="$1"
   local v
@@ -265,6 +317,8 @@ check_ports_in_compose() {
 }
 
 build_selected_services
+
+render_redis_config || exit 1
 
 check_ports_in_compose "$BASE_DIR/docker-compose.yml" "$INFRA_SELECTED" || exit 1
 check_ports_in_compose "$BASE_DIR/apisix/docker-compose.yml" "$APISIX_SELECTED" || exit 1

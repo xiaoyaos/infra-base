@@ -27,6 +27,14 @@ sh infractl.sh
 - 端口输入：仅对“选择创建”的容器输入端口，并实时检测占用
 - base/full 安装时会写入 `/etc/profile.d/custom.sh`，注册 `INFRA_BASE_HOME=<infra-base根目录>`
 
+Redis 认证补充：
+- `default` 使用 `COMMON_PASSWORD`
+- `app_subscriber` 使用 `.env` 的 `APP_SUBSCRIBER_PASSWORD`（未设置时默认 `app_subscriber_password`）
+- `socket_subscriber` 使用 `.env` 的 `SOCKET_SUBSCRIBER_PASSWORD`（未设置时默认 `socket_subscriber_password`）
+- 安装交互中仅当选择创建 Redis 时才会提示输入 `app_subscriber/socket_subscriber` 密码，并写入 `.env`
+- `app_subscriber` 允许远程连接，频道限制为 `iam:*`，放行 `HELLO/PING/RESET/CLIENT GETNAME/CLIENT SETNAME/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE/SELECT 0`
+- `socket_subscriber` 允许远程连接，频道限制为 `socket:*`，在订阅能力基础上额外放行 `PUBLISH`
+
 ## 业务网络要求
 业务服务 compose 需要挂入 infra-base 外部网络（`NETWORK_NAME=infra-base-<project>`）：
 

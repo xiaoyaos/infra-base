@@ -1,0 +1,5 @@
+user default on >__COMMON_PASSWORD__ ~* +@all
+
+user app_subscriber on >__APP_SUBSCRIBER_PASSWORD__ ~iam:* resetchannels &iam:* -@all +hello +ping +reset +select|0 +client|getname +client|setname +subscribe +psubscribe +unsubscribe +punsubscribe
+
+user socket_subscriber on >__SOCKET_SUBSCRIBER_PASSWORD__ resetchannels &socket:* -@all +hello +ping +reset +select|0 +client|getname +client|setname +publish +subscribe +psubscribe +unsubscribe +punsubscribe
