@@ -225,62 +225,102 @@ rsync_or_copy() {
 backup_pg_logical() {
   local cid="$1"
   local out_dir="$2"
-  log "导出 PostgreSQL 逻辑备份(pg_dump -Fc)..."
-  mkdir -p "$out_dir"
+  local log_file
+  log_file="$(mktemp)"
 
-  docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-    pg_dumpall --globals-only -U "$DEFAULT_PG_USER" > "$out_dir/globals.sql"
+  echo "[postgres] 备份中..."
+  {
+    mkdir -p "$out_dir"
 
-  local db_list
-  db_list="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-    psql -t -A -U "$DEFAULT_PG_USER" -d postgres \
-    -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname;")"
-
-  : > "$out_dir/db_list.txt"
-  : > "$out_dir/db_meta.tsv"
-  while IFS= read -r db; do
-    [ -z "$db" ] && continue
-    echo "$db" >> "$out_dir/db_list.txt"
-    local has_tsdb
-    has_tsdb="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-      psql -t -A -U "$DEFAULT_PG_USER" -d "$db" \
-      -c "SELECT 1 FROM pg_extension WHERE extname='timescaledb';" | tr -d '[:space:]')"
-    if [ "$has_tsdb" = "1" ]; then
-      echo "${db}\ttrue" >> "$out_dir/db_meta.tsv"
-    else
-      echo "${db}\tfalse" >> "$out_dir/db_meta.tsv"
-    fi
     docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-      pg_dump -Fc -U "$DEFAULT_PG_USER" -d "$db" > "$out_dir/${db}.dump"
-  done <<< "$db_list"
+      pg_dumpall --globals-only -U "$DEFAULT_PG_USER" > "$out_dir/globals.sql"
+
+    local db_list
+    db_list="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+      psql -t -A -U "$DEFAULT_PG_USER" -d postgres \
+      -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname;")"
+
+    : > "$out_dir/db_list.txt"
+    : > "$out_dir/db_meta.tsv"
+    while IFS= read -r db; do
+      [ -z "$db" ] && continue
+      echo "$db" >> "$out_dir/db_list.txt"
+      local has_tsdb
+      has_tsdb="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+        psql -t -A -U "$DEFAULT_PG_USER" -d "$db" \
+        -c "SELECT 1 FROM pg_extension WHERE extname='timescaledb';" | tr -d '[:space:]')"
+      if [ "$has_tsdb" = "1" ]; then
+        echo "${db}\ttrue" >> "$out_dir/db_meta.tsv"
+      else
+        echo "${db}\tfalse" >> "$out_dir/db_meta.tsv"
+      fi
+      docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+        pg_dump -Fc -U "$DEFAULT_PG_USER" -d "$db" > "$out_dir/${db}.dump"
+    done <<< "$db_list"
+  } >"$log_file" 2>&1 || {
+    echo "[postgres] 备份失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+
+  rm -f "$log_file"
+  echo "[postgres] 备份完成"
 }
 
 backup_mongo_logical() {
   local cid="$1"
   local out="$2"
-  log "导出 MongoDB 逻辑备份..."
-  docker exec "$cid" mongodump \
-    --authenticationDatabase admin \
-    -u "$DEFAULT_MONGO_USER" \
-    -p "$DEFAULT_MONGO_PASSWORD" \
-    --archive --gzip > "$out"
+  local log_file
+  log_file="$(mktemp)"
+
+  echo "[mongo] 备份中..."
+  {
+    docker exec "$cid" mongodump \
+      --authenticationDatabase admin \
+      -u "$DEFAULT_MONGO_USER" \
+      -p "$DEFAULT_MONGO_PASSWORD" \
+      --archive --gzip > "$out"
+  } >"$log_file" 2>&1 || {
+    echo "[mongo] 备份失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+
+  rm -f "$log_file"
+  echo "[mongo] 备份完成"
 }
 
 backup_minio_logical() {
   local minio_cid="$1"
   local out_dir="$2"
   local tmp_dir="/tmp/minio-logical-backup"
-  log "导出 MinIO 对象(容器内 mc mirror)..."
-  mkdir -p "$out_dir"
+  local log_file
+  log_file="$(mktemp)"
 
   if ! docker exec "$minio_cid" sh -c "command -v mc >/dev/null 2>&1"; then
+    rm -f "$log_file"
     err "minio 容器内未找到 mc，无法执行 MinIO 逻辑备份"
     return 1
   fi
 
-  docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir' && mkdir -p '$tmp_dir' && mc alias set src http://127.0.0.1:9000 $DEFAULT_MINIO_USER $DEFAULT_MINIO_PASSWORD >/dev/null && mc mirror --overwrite src '$tmp_dir'"
-  docker cp "$minio_cid:$tmp_dir/." "$out_dir/"
-  docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir'" >/dev/null 2>&1 || true
+  echo "[minio] 备份中..."
+  {
+    mkdir -p "$out_dir"
+
+    docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir' && mkdir -p '$tmp_dir' && mc alias set src http://127.0.0.1:9000 $DEFAULT_MINIO_USER $DEFAULT_MINIO_PASSWORD >/dev/null && mc mirror --overwrite src '$tmp_dir'"
+    docker cp "$minio_cid:$tmp_dir/." "$out_dir/"
+    docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir'" >/dev/null 2>&1 || true
+  } >"$log_file" 2>&1 || {
+    echo "[minio] 备份失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+
+  rm -f "$log_file"
+  echo "[minio] 备份完成"
 }
 
 backup_logical_data() {

@@ -4,7 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="$BASE_DIR/.env"
+source "$SCRIPT_DIR/lib_project_env.sh"
+ENV_FILE=""
 
 PROJECT_NAME=""
 STRICT="false"
@@ -183,11 +184,20 @@ check_mongo() {
     fail "缺少 COMMON_PASSWORD，无法执行 MongoDB 连接检查"
     return 1
   fi
-  if docker exec "$cid" mongosh --quiet --authenticationDatabase admin -u admin -p "$pwd" --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q "1"; then
-    pass "MongoDB 连通性检查通过"
-  else
-    fail "MongoDB 连通性检查失败"
-  fi
+
+  local attempt=1
+  while [ "$attempt" -le 3 ]; do
+    if docker exec "$cid" mongosh --quiet --authenticationDatabase admin -u admin -p "$pwd" --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q "1"; then
+      pass "MongoDB 连通性检查通过"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      sleep 2
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  fail "MongoDB 连通性检查失败"
 }
 
 check_minio() {
@@ -252,6 +262,12 @@ main() {
     usage
     exit 1
   }
+  if ! project_name_is_valid "$PROJECT_NAME"; then
+    echo "[check] 非法项目名称: $PROJECT_NAME" >&2
+    exit 1
+  fi
+
+  ENV_FILE="$(resolve_project_env_file "$PROJECT_NAME")"
 
   require_cmd docker
   if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then

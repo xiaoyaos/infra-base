@@ -36,6 +36,7 @@ echo "[uninstall] 当前已存在的 compose 项目:"
 docker compose ls --format json 2>/dev/null \
   | awk -F'"Name":"' '{for(i=2;i<=NF;i++){split($i,a,"\""); print a[1]}}' \
   | sort -u || true
+echo "[uninstall] 提示: 本脚本仅卸载 infra-base/apisix；通过 deploy_services.sh 部署的业务服务需在其 compose 目录自行 down"
 
 PROJECT_NAME="${1:-}"
 while :; do
@@ -65,5 +66,8 @@ echo "[uninstall] 停止并删除 infra-base (project: $COMPOSE_PROJECT_NAME)...
 $COMPOSE_BIN -f "$BASE_DIR/docker-compose.yml" down
 
 echo "[uninstall] 删除网络: $NETWORK_NAME"
-$SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 && \
-  $SUDO docker network rm "$NETWORK_NAME" >/dev/null 2>&1 || true
+if $SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+  if ! $SUDO docker network rm "$NETWORK_NAME" >/dev/null 2>&1; then
+    echo "[uninstall] 未删除网络 $NETWORK_NAME，可能仍有业务服务占用；请先清理业务服务后重试" >&2
+  fi
+fi

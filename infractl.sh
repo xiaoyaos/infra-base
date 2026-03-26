@@ -24,8 +24,8 @@ infra-base 统一入口
   4) 数据恢复（restore）
   5) 健康检查（check）
   6) 启动基础服务（start）
-  7) 卸载基础服务（uninstall）
-  8) 部署业务服务（deploy services）
+  7) 卸载基础服务（uninstall，不含业务服务）
+  8) 部署业务服务（deploy services，独立管理）
   9) 初始化样例数据
 
 说明
@@ -124,8 +124,8 @@ menu() {
   4) 数据恢复（restore）
   5) 健康检查（check）
   6) 启动基础服务（start）
-  7) 卸载基础服务（uninstall）
-  8) 部署业务服务（deploy services）
+  7) 卸载基础服务（uninstall，不含业务服务）
+  8) 部署业务服务（deploy services，独立管理）
   9) 初始化样例数据（init sample data）
   0) 退出
 EOF_MENU

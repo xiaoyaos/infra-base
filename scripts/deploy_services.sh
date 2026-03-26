@@ -17,6 +17,7 @@ print_usage() {
   - 会为每个 compose 文件执行 docker compose up -d
   - 会导出 COMPOSE_PROJECT_NAME=<项目名> 与 NETWORK_NAME=<网络名>
     业务 compose 可通过 ${NETWORK_NAME} 引用外部网络
+  - 通过本脚本部署的业务服务需要在业务 compose 目录自行 down；不会被 infra-base uninstall 自动清理
 USAGE
 }
 
@@ -97,6 +98,41 @@ port_in_use() {
     lsof -iTCP:"$port" -sTCP:LISTEN -P -n >/dev/null 2>&1
     return $?
   fi
+  return 1
+}
+
+csv_contains() {
+  local csv="${1:-}"
+  local target="${2:-}"
+  [ -n "$csv" ] || return 1
+  echo "$csv" | tr ',' '\n' | grep -Fx "$target" >/dev/null 2>&1
+}
+
+port_in_use_by_blocker() {
+  local port="$1"
+  local allowed_services_csv="${2:-}"
+
+  if ! port_in_use "$port"; then
+    return 1
+  fi
+
+  local blockers
+  blockers="$(docker ps \
+    --filter "publish=$port" \
+    --format '{{.Label "com.docker.compose.project"}} {{.Label "com.docker.compose.service"}}' 2>/dev/null || true)"
+
+  if [ -z "$blockers" ]; then
+    return 0
+  fi
+
+  while read -r blocker_project blocker_service; do
+    [ -z "${blocker_project:-}" ] && continue
+    if [ "$blocker_project" = "$COMPOSE_PROJECT_NAME" ] && csv_contains "$allowed_services_csv" "$blocker_service"; then
+      continue
+    fi
+    return 0
+  done <<< "$blockers"
+
   return 1
 }
 
@@ -215,7 +251,7 @@ check_ports_in_compose() {
   local blocked=0
   while read -r p; do
     [ -z "$p" ] && continue
-    if port_in_use "$p"; then
+    if port_in_use_by_blocker "$p" "$targets_csv"; then
       echo "[deploy] 端口已被占用: $p (来自 $file)" >&2
       blocked=1
     fi
@@ -231,6 +267,7 @@ $SUDO docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || \
 
 echo "[deploy] 使用项目名: $COMPOSE_PROJECT_NAME"
 echo "[deploy] 使用网络: $NETWORK_NAME"
+echo "[deploy] 提示: 业务服务需在各自 compose 目录独立维护；不会被 infra-base uninstall 自动删除"
 
 for f in "${COMPOSE_FILES[@]}"; do
   if [ ! -f "$f" ]; then

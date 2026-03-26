@@ -4,21 +4,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib_project_env.sh"
 
 MODE=""
 PROJECT_NAME=""
 BUNDLE_DIR="$BASE_DIR"
 RESTORE_SOURCE=""
 COMMON_PASSWORD="${COMMON_PASSWORD:-}"
+ENV_FILE=""
 SELECTED_PORTS=""
 LAST_PORT=""
 LAST_BOOL=""
 REQUIRE_STRONG_PASSWORD="false"
+PROJECT_ALREADY_EXISTS="false"
+FORCE_RECREATE_SERVICES=""
+PREVIOUS_INFRA_SELECTED=""
+PREVIOUS_APISIX_SELECTED=""
 
 usage() {
   cat <<'USAGE'
 用法:
-  sh scripts/install.sh [--mode base|full|restore] [--project <name>] [--bundle <path>] [--source raw|logical|1|2] [--password <pwd>]
+  sh scripts/install.sh [--mode base|full|restore] [--project <name>] [--bundle <path>] [--source raw|logical|1|2] [--password <pwd>] [--recreate <svc1,svc2>]
 
 模式说明:
   --mode base     仅执行基础环境初始化并启动 infra-base
@@ -30,10 +36,12 @@ usage() {
   --bundle        迁移包目录(默认 infra-base 根目录)
   --source        恢复源(raw/logical 或 1/2)，不指定时按备份内容动态交互选择
   --password      统一密码(不传则交互输入，必填)
+  --recreate      强制重建的服务列表，逗号分隔(仅已存在 project 时生效)
 
 说明:
   - base/full 模式会逐项交互输入端口映射，默认使用容器官方端口
   - 每次回车采用默认值后，都会立即进行端口占用检查
+  - 同一台机器做 full/restore 验证时，建议复制一份 infra-base 到独立目录后再执行
 USAGE
 }
 
@@ -50,6 +58,8 @@ parse_args() {
         RESTORE_SOURCE="${2:-}"; shift 2 ;;
       --password)
         COMMON_PASSWORD="${2:-}"; shift 2 ;;
+      --recreate)
+        FORCE_RECREATE_SERVICES="${2:-}"; shift 2 ;;
       -h|--help)
         usage; exit 0 ;;
       *)
@@ -95,6 +105,9 @@ EOF_MODE
 }
 
 prompt_common_password() {
+  if [ -z "$COMMON_PASSWORD" ]; then
+    COMMON_PASSWORD="$(env_var_value "COMMON_PASSWORD")"
+  fi
   if [ -n "$COMMON_PASSWORD" ]; then
     if [ "$REQUIRE_STRONG_PASSWORD" = "true" ] && ! password_meets_policy "$COMMON_PASSWORD"; then
       echo "[install] 统一密码长度必须大于等于 8，请重新输入" >&2
@@ -124,12 +137,38 @@ password_meets_policy() {
   [ "${#pwd}" -ge 8 ]
 }
 
+current_env_file() {
+  if [ -n "$ENV_FILE" ]; then
+    echo "$ENV_FILE"
+  else
+    legacy_env_file
+  fi
+}
+
 env_var_value() {
   local key="$1"
-  local env_file="$BASE_DIR/.env"
+  local env_file
+  env_file="$(current_env_file)"
   if [ -f "$env_file" ]; then
     awk -F= -v k="$key" '$1==k{print substr($0,index($0,"=")+1); exit}' "$env_file"
   fi
+}
+
+env_bool_value() {
+  local key="$1"
+  local default="${2:-false}"
+  local value
+  value="$(env_var_value "$key")"
+  case "$value" in
+    true|TRUE|True|1|yes|YES|Yes) echo "true" ;;
+    false|FALSE|False|0|no|NO|No) echo "false" ;;
+    *) echo "$default" ;;
+  esac
+}
+
+is_enabled() {
+  local key="$1"
+  [ "$(env_bool_value "$key" "false")" = "true" ]
 }
 
 prompt_env_password_if_missing() {
@@ -255,7 +294,9 @@ init_services_dir() {
 set_env_var() {
   local key="$1"
   local val="$2"
-  local env_file="$BASE_DIR/.env"
+  local env_file
+  env_file="$(current_env_file)"
+  mkdir -p "$(dirname "$env_file")"
   touch "$env_file"
   if grep -q "^${key}=" "$env_file" 2>/dev/null; then
     sed -i.bak "s|^${key}=.*|${key}=${val}|" "$env_file" && rm -f "$env_file.bak"
@@ -277,6 +318,38 @@ port_in_use() {
   return 1
 }
 
+port_in_use_by_other_service() {
+  local port="$1"
+  local project="${2:-}"
+  local service="${3:-}"
+
+  if ! port_in_use "$port"; then
+    return 1
+  fi
+
+  if [ -n "$project" ] && [ -n "$service" ] && command -v docker >/dev/null 2>&1; then
+    local blockers
+    blockers="$(docker ps \
+      --filter "publish=$port" \
+      --format '{{.Label "com.docker.compose.project"}} {{.Label "com.docker.compose.service"}}' 2>/dev/null || true)"
+    if [ -n "$blockers" ]; then
+      local only_self="true"
+      while read -r blocker_project blocker_service; do
+        [ -z "${blocker_project:-}" ] && continue
+        if [ "$blocker_project" != "$project" ] || [ "$blocker_service" != "$service" ]; then
+          only_self="false"
+          break
+        fi
+      done <<< "$blockers"
+      if [ "$only_self" = "true" ]; then
+        return 1
+      fi
+    fi
+  fi
+
+  return 0
+}
+
 is_valid_port() {
   local port="$1"
   [[ "$port" =~ ^[0-9]+$ ]] || return 1
@@ -286,14 +359,19 @@ is_valid_port() {
 prompt_single_port() {
   local env_key="$1"
   local service_name="$2"
-  local container_port="$3"
+  local runtime_service="$3"
+  local container_port="$4"
   local input=""
   local candidate=""
   local used_by=""
+  local default_port=""
+
+  default_port="$(env_var_value "$env_key")"
+  default_port="${default_port:-$container_port}"
 
   while :; do
-    read -r -p "请输入 ${service_name} 宿主机端口(容器端口 ${container_port}，默认 ${container_port}): " input
-    candidate="${input:-$container_port}"
+    read -r -p "请输入 ${service_name} 宿主机端口(容器端口 ${container_port}，默认 ${default_port}): " input
+    candidate="${input:-$default_port}"
 
     if ! is_valid_port "$candidate"; then
       echo "[install] 端口无效: $candidate，请输入 1-65535 的整数" >&2
@@ -306,7 +384,7 @@ prompt_single_port() {
       continue
     fi
 
-    if port_in_use "$candidate"; then
+    if port_in_use_by_other_service "$candidate" "$PROJECT_NAME" "$runtime_service"; then
       echo "[install] 端口已被系统占用: $candidate，请重新输入" >&2
       continue
     fi
@@ -321,73 +399,28 @@ prompt_single_port() {
   done
 }
 
-prompt_ports_for_base() {
-  echo "[install] 请输入各服务端口(回车采用容器官方端口，均会校验占用):"
-
-  SELECTED_PORTS=""
-  echo "[install] 先选择是否创建容器(默认创建)，仅创建的容器才输入端口。"
-  local etcd_enabled="false"
-
-  prompt_enable_service "PostgreSQL(tsdb)"; set_env_var "ENABLE_TSDB" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "TSDB_PORT" "PostgreSQL(tsdb)" "5432"; set_env_var "TSDB_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "Redis(redis)"; set_env_var "ENABLE_REDIS" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    ensure_redis_acl_passwords
-    prompt_single_port "REDIS_PORT" "Redis(redis)" "6379"; set_env_var "REDIS_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "Nginx(nginx)"; set_env_var "ENABLE_NGINX" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "NGINX_HTTPS_PORT" "Nginx HTTPS(nginx)" "443"; set_env_var "NGINX_HTTPS_PORT" "$LAST_PORT"
-    prompt_single_port "NGINX_HTTP_PORT" "Nginx HTTP(nginx)" "80"; set_env_var "NGINX_HTTP_PORT" "$LAST_PORT"
-    prompt_single_port "NGINX_HTTP_ALT_PORT" "Nginx HTTP-ALT(nginx)" "80"; set_env_var "NGINX_HTTP_ALT_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "MinIO(minio)"; set_env_var "ENABLE_MINIO" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "MINIO_API_PORT" "MinIO API(minio)" "9000"; set_env_var "MINIO_API_PORT" "$LAST_PORT"
-    prompt_single_port "MINIO_CONSOLE_PORT" "MinIO Console(minio)" "9001"; set_env_var "MINIO_CONSOLE_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "EMQX(emqx)"; set_env_var "ENABLE_EMQX" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "EMQX_MQTT_PORT" "EMQX MQTT(emqx)" "1883"; set_env_var "EMQX_MQTT_PORT" "$LAST_PORT"
-    prompt_single_port "EMQX_HTTP_API_PORT" "EMQX HTTP API(emqx)" "8081"; set_env_var "EMQX_HTTP_API_PORT" "$LAST_PORT"
-    prompt_single_port "EMQX_WS_PORT" "EMQX WS(emqx)" "8083"; set_env_var "EMQX_WS_PORT" "$LAST_PORT"
-    prompt_single_port "EMQX_SSL_MQTT_PORT" "EMQX SSL MQTT(emqx)" "8883"; set_env_var "EMQX_SSL_MQTT_PORT" "$LAST_PORT"
-    prompt_single_port "EMQX_WSS_PORT" "EMQX WSS(emqx)" "8084"; set_env_var "EMQX_WSS_PORT" "$LAST_PORT"
-    prompt_single_port "EMQX_DASHBOARD_PORT" "EMQX Dashboard(emqx)" "18083"; set_env_var "EMQX_DASHBOARD_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "MongoDB(mongo)"; set_env_var "ENABLE_MONGO" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "MONGO_PORT" "MongoDB(mongo)" "27017"; set_env_var "MONGO_PORT" "$LAST_PORT"
-  fi
-
-  prompt_enable_service "etcd"; set_env_var "ENABLE_ETCD" "$LAST_BOOL"; etcd_enabled="$LAST_BOOL"
-
-  prompt_enable_service "APISIX(apisix)"; set_env_var "ENABLE_APISIX" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ] && [ "$etcd_enabled" != "true" ]; then
-    echo "[install] APISIX 依赖 etcd，已自动启用 etcd"
-    set_env_var "ENABLE_ETCD" "true"
-    etcd_enabled="true"
-  fi
-
-  prompt_enable_service "APISIX Dashboard(apisix-dashboard)"; set_env_var "ENABLE_APISIX_DASHBOARD" "$LAST_BOOL"
-  if [ "$LAST_BOOL" = "true" ]; then
-    prompt_single_port "APISIX_DASHBOARD_PORT" "APISIX Dashboard" "9000"; set_env_var "APISIX_DASHBOARD_PORT" "$LAST_PORT"
-  fi
-}
-
 prompt_enable_service() {
   local service_name="$1"
+  local env_key="$2"
   local ans=""
+  local current_default=""
+  local prompt_suffix=""
+
+  current_default="$(env_bool_value "$env_key" "true")"
+  if [ "$current_default" = "true" ]; then
+    prompt_suffix="[Y/n]"
+  else
+    prompt_suffix="[y/N]"
+  fi
   while :; do
-    read -r -p "是否创建 ${service_name}? [Y/n]: " ans
-    ans="${ans:-Y}"
+    read -r -p "是否创建 ${service_name}? ${prompt_suffix}: " ans
+    if [ -z "$ans" ]; then
+      if [ "$current_default" = "true" ]; then
+        ans="Y"
+      else
+        ans="N"
+      fi
+    fi
     case "$ans" in
       Y|y)
         LAST_BOOL="true"
@@ -404,6 +437,67 @@ prompt_enable_service() {
   done
 }
 
+prompt_ports_for_base() {
+  echo "[install] 请输入各服务端口(回车采用当前值或容器官方端口，均会校验占用):"
+
+  SELECTED_PORTS=""
+  echo "[install] 先选择是否创建容器，仅创建的容器才输入端口。"
+  local etcd_enabled="false"
+
+  prompt_enable_service "PostgreSQL(tsdb)" "ENABLE_TSDB"; set_env_var "ENABLE_TSDB" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "TSDB_PORT" "PostgreSQL(tsdb)" "tsdb" "5432"; set_env_var "TSDB_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "Redis(redis)" "ENABLE_REDIS"; set_env_var "ENABLE_REDIS" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    ensure_redis_acl_passwords
+    prompt_single_port "REDIS_PORT" "Redis(redis)" "redis" "6379"; set_env_var "REDIS_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "Nginx(nginx)" "ENABLE_NGINX"; set_env_var "ENABLE_NGINX" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "NGINX_HTTPS_PORT" "Nginx HTTPS(nginx)" "nginx" "443"; set_env_var "NGINX_HTTPS_PORT" "$LAST_PORT"
+    prompt_single_port "NGINX_HTTP_PORT" "Nginx HTTP(nginx)" "nginx" "80"; set_env_var "NGINX_HTTP_PORT" "$LAST_PORT"
+    prompt_single_port "NGINX_HTTP_ALT_PORT" "Nginx HTTP-ALT(nginx)" "nginx" "3001"; set_env_var "NGINX_HTTP_ALT_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "MinIO(minio)" "ENABLE_MINIO"; set_env_var "ENABLE_MINIO" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "MINIO_API_PORT" "MinIO API(minio)" "minio" "9000"; set_env_var "MINIO_API_PORT" "$LAST_PORT"
+    prompt_single_port "MINIO_CONSOLE_PORT" "MinIO Console(minio)" "minio" "9001"; set_env_var "MINIO_CONSOLE_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "EMQX(emqx)" "ENABLE_EMQX"; set_env_var "ENABLE_EMQX" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "EMQX_MQTT_PORT" "EMQX MQTT(emqx)" "emqx" "1883"; set_env_var "EMQX_MQTT_PORT" "$LAST_PORT"
+    prompt_single_port "EMQX_HTTP_API_PORT" "EMQX HTTP API(emqx)" "emqx" "8081"; set_env_var "EMQX_HTTP_API_PORT" "$LAST_PORT"
+    prompt_single_port "EMQX_WS_PORT" "EMQX WS(emqx)" "emqx" "8083"; set_env_var "EMQX_WS_PORT" "$LAST_PORT"
+    prompt_single_port "EMQX_SSL_MQTT_PORT" "EMQX SSL MQTT(emqx)" "emqx" "8883"; set_env_var "EMQX_SSL_MQTT_PORT" "$LAST_PORT"
+    prompt_single_port "EMQX_WSS_PORT" "EMQX WSS(emqx)" "emqx" "8084"; set_env_var "EMQX_WSS_PORT" "$LAST_PORT"
+    prompt_single_port "EMQX_DASHBOARD_PORT" "EMQX Dashboard(emqx)" "emqx" "18083"; set_env_var "EMQX_DASHBOARD_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "MongoDB(mongo)" "ENABLE_MONGO"; set_env_var "ENABLE_MONGO" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "MONGO_PORT" "MongoDB(mongo)" "mongo" "27017"; set_env_var "MONGO_PORT" "$LAST_PORT"
+  fi
+
+  prompt_enable_service "etcd" "ENABLE_ETCD"; set_env_var "ENABLE_ETCD" "$LAST_BOOL"; etcd_enabled="$LAST_BOOL"
+
+  prompt_enable_service "APISIX(apisix)" "ENABLE_APISIX"; set_env_var "ENABLE_APISIX" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ] && [ "$etcd_enabled" != "true" ]; then
+    echo "[install] APISIX 依赖 etcd，已自动启用 etcd"
+    set_env_var "ENABLE_ETCD" "true"
+    etcd_enabled="true"
+  fi
+
+  prompt_enable_service "APISIX Dashboard(apisix-dashboard)" "ENABLE_APISIX_DASHBOARD"; set_env_var "ENABLE_APISIX_DASHBOARD" "$LAST_BOOL"
+  if [ "$LAST_BOOL" = "true" ]; then
+    prompt_single_port "APISIX_DASHBOARD_PORT" "APISIX Dashboard" "apisix-dashboard" "9000"; set_env_var "APISIX_DASHBOARD_PORT" "$LAST_PORT"
+  fi
+}
+
 compose_cmd() {
   if docker compose version >/dev/null 2>&1; then
     echo "docker compose"
@@ -415,7 +509,9 @@ compose_cmd() {
 }
 
 choose_project_name() {
+  local reuse_existing=""
   while :; do
+    PROJECT_ALREADY_EXISTS="false"
     if [ -z "$PROJECT_NAME" ]; then
       read -r -p "请输入项目名称 (用于 docker compose project name): " PROJECT_NAME
     fi
@@ -423,11 +519,34 @@ choose_project_name() {
       echo "[install] 项目名称不能为空，请重新输入" >&2
       continue
     fi
-    if project_exists "$PROJECT_NAME"; then
-      echo "[install] 项目名称已存在: $PROJECT_NAME，请重新输入新的项目名称" >&2
+    if ! project_name_is_valid "$PROJECT_NAME"; then
+      echo "[install] 项目名称仅支持字母、数字、点、下划线、中划线，且必须以字母或数字开头" >&2
       PROJECT_NAME=""
       continue
     fi
+    if project_exists "$PROJECT_NAME"; then
+      while :; do
+        read -r -p "检测到项目 ${PROJECT_NAME} 已存在，是否对该项目执行补装/更新？ [Y/n]: " reuse_existing
+        reuse_existing="${reuse_existing:-Y}"
+        case "$reuse_existing" in
+          Y|y)
+            PROJECT_ALREADY_EXISTS="true"
+            ENV_FILE="$(migrate_legacy_env_to_project "$PROJECT_NAME")"
+            return 0
+            ;;
+          N|n)
+            PROJECT_NAME=""
+            break
+            ;;
+          *)
+            echo "[install] 请输入 Y 或 N" >&2
+            ;;
+        esac
+      done
+      continue
+    fi
+    ensure_project_state_dir "$PROJECT_NAME"
+    ENV_FILE="$(project_env_file "$PROJECT_NAME")"
     break
   done
 }
@@ -441,6 +560,190 @@ project_exists() {
   local count
   count="$(docker ps -a --filter "label=com.docker.compose.project=$project" -q | wc -l | tr -d ' ')"
   [ "$count" -gt 0 ]
+}
+
+selected_service_strings() {
+  local infra=""
+  local apisix=""
+
+  is_enabled "ENABLE_TSDB" && infra="$infra tsdb"
+  is_enabled "ENABLE_REDIS" && infra="$infra redis"
+  is_enabled "ENABLE_NGINX" && infra="$infra nginx"
+  is_enabled "ENABLE_MINIO" && infra="$infra minio"
+  is_enabled "ENABLE_EMQX" && infra="$infra emqx"
+  is_enabled "ENABLE_MONGO" && infra="$infra mongo"
+  is_enabled "ENABLE_ETCD" && apisix="$apisix etcd"
+  is_enabled "ENABLE_APISIX" && apisix="$apisix apisix"
+  is_enabled "ENABLE_APISIX_DASHBOARD" && apisix="$apisix apisix-dashboard"
+
+  printf '%s\n%s\n' "$infra" "$apisix"
+}
+
+snapshot_selected_services() {
+  local selected
+  selected="$(selected_service_strings)"
+  PREVIOUS_INFRA_SELECTED="$(printf '%s\n' "$selected" | sed -n '1p')"
+  PREVIOUS_APISIX_SELECTED="$(printf '%s\n' "$selected" | sed -n '2p')"
+}
+
+known_service_name() {
+  case "$1" in
+    tsdb|redis|nginx|minio|emqx|mongo|etcd|apisix|apisix-dashboard) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+service_enabled_by_name() {
+  case "$1" in
+    tsdb) is_enabled "ENABLE_TSDB" ;;
+    redis) is_enabled "ENABLE_REDIS" ;;
+    nginx) is_enabled "ENABLE_NGINX" ;;
+    minio) is_enabled "ENABLE_MINIO" ;;
+    emqx) is_enabled "ENABLE_EMQX" ;;
+    mongo) is_enabled "ENABLE_MONGO" ;;
+    etcd) is_enabled "ENABLE_ETCD" ;;
+    apisix) is_enabled "ENABLE_APISIX" ;;
+    apisix-dashboard) is_enabled "ENABLE_APISIX_DASHBOARD" ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_service_list() {
+  local raw="${1:-}"
+  echo "$raw" \
+    | tr ',' '\n' \
+    | tr ' ' '\n' \
+    | sed '/^$/d' \
+    | awk '!seen[$0]++'
+}
+
+prompt_recreate_services() {
+  local requested=""
+  local normalized=""
+  local invalid=""
+  local disabled=""
+  local valid=""
+
+  if [ "$PROJECT_ALREADY_EXISTS" != "true" ]; then
+    FORCE_RECREATE_SERVICES=""
+    return 0
+  fi
+
+  while :; do
+    invalid=""
+    disabled=""
+    valid=""
+
+    if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+      requested="$FORCE_RECREATE_SERVICES"
+    else
+      echo "[install] 如需强制重建已存在服务，请输入服务名(逗号/空格分隔，直接回车跳过)"
+      echo "[install] 可选服务: tsdb redis nginx minio emqx mongo etcd apisix apisix-dashboard"
+      read -r -p "请输入需要强制重建的服务: " requested
+    fi
+
+    normalized="$(normalize_service_list "$requested")"
+    if [ -z "$normalized" ]; then
+      FORCE_RECREATE_SERVICES=""
+      return 0
+    fi
+
+    while read -r svc; do
+      [ -z "$svc" ] && continue
+      if ! known_service_name "$svc"; then
+        invalid="$invalid $svc"
+        continue
+      fi
+      if ! service_enabled_by_name "$svc"; then
+        disabled="$disabled $svc"
+        continue
+      fi
+      if [ -z "$valid" ]; then
+        valid="$svc"
+      else
+        valid="$valid,$svc"
+      fi
+    done <<< "$normalized"
+
+    if [ -n "$invalid" ]; then
+      echo "[install] 存在未知服务:$invalid" >&2
+      if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+        exit 1
+      fi
+      continue
+    fi
+    if [ -n "$disabled" ]; then
+      echo "[install] 以下服务当前未启用，不能强制重建:$disabled" >&2
+      if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+        exit 1
+      fi
+      continue
+    fi
+
+    FORCE_RECREATE_SERVICES="$valid"
+    return 0
+  done
+}
+
+service_list_diff() {
+  local old_list="${1:-}"
+  local new_list="${2:-}"
+
+  echo "$old_list" | xargs -n1 2>/dev/null \
+    | awk 'NF' \
+    | while read -r svc; do
+        echo "$new_list" | tr ' ' '\n' | awk 'NF' | grep -Fx "$svc" >/dev/null 2>&1 || echo "$svc"
+      done
+}
+
+remove_services_from_compose() {
+  local file="$1"
+  shift || true
+  [ "$#" -eq 0 ] && return 0
+
+  local compose
+  compose="$(compose_cmd)" || return 0
+
+  echo "[install] 停止并移除已取消选择的服务: $*"
+  if [ -f "$ENV_FILE" ]; then
+    $compose --env-file "$ENV_FILE" -f "$file" stop "$@" >/dev/null 2>&1 || true
+    $compose --env-file "$ENV_FILE" -f "$file" rm -f "$@" >/dev/null 2>&1 || true
+  else
+    $compose -f "$file" stop "$@" >/dev/null 2>&1 || true
+    $compose -f "$file" rm -f "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+prune_disabled_services() {
+  [ "$PROJECT_ALREADY_EXISTS" = "true" ] || return 0
+
+  local selected
+  local current_infra
+  local current_apisix
+  local removed_infra=()
+  local removed_apisix=()
+  local svc
+
+  selected="$(selected_service_strings)"
+  current_infra="$(printf '%s\n' "$selected" | sed -n '1p')"
+  current_apisix="$(printf '%s\n' "$selected" | sed -n '2p')"
+
+  while read -r svc; do
+    [ -z "$svc" ] && continue
+    removed_infra+=("$svc")
+  done < <(service_list_diff "$PREVIOUS_INFRA_SELECTED" "$current_infra")
+
+  while read -r svc; do
+    [ -z "$svc" ] && continue
+    removed_apisix+=("$svc")
+  done < <(service_list_diff "$PREVIOUS_APISIX_SELECTED" "$current_apisix")
+
+  if [ ${#removed_infra[@]} -gt 0 ]; then
+    remove_services_from_compose "$BASE_DIR/docker-compose.yml" "${removed_infra[@]}"
+  fi
+  if [ ${#removed_apisix[@]} -gt 0 ]; then
+    remove_services_from_compose "$BASE_DIR/apisix/docker-compose.yml" "${removed_apisix[@]}"
+  fi
 }
 
 install_docker_and_runtime() {
@@ -584,7 +887,7 @@ validate_bundle_dir() {
 
   if [ ! -f "$BUNDLE_DIR/manifest.json" ]; then
     echo "[install] 无效迁移包: 缺少 manifest.json ($BUNDLE_DIR/manifest.json)" >&2
-    echo "[install] 请先执行: sh scripts/migration.sh 生成迁移包，再使用 full/restore" >&2
+    echo "[install] 请先执行: sh infractl.sh ，选择 2) 生成迁移包（migration backup），再使用 full/restore" >&2
     exit 1
   fi
 
@@ -703,29 +1006,58 @@ EOF_MENU
   done
 }
 
+print_same_host_restore_notice() {
+  cat <<EOF_NOTICE
+[install] 提示:
+  - full/restore 会把数据恢复到当前 infra-base 目录下
+  - 如果在同一台机器上做迁移验证，建议先复制一份 infra-base 到独立目录后再执行
+  - 迁移包目录可单独放置，通过 --bundle 指向即可，不要求与当前目录相同
+EOF_NOTICE
+}
+
 main() {
   parse_args "$@"
   choose_mode_if_missing
+
+  if [ -n "$PROJECT_NAME" ]; then
+    if ! project_name_is_valid "$PROJECT_NAME"; then
+      echo "[install] 非法项目名称: $PROJECT_NAME" >&2
+      exit 1
+    fi
+    ENV_FILE="$(resolve_project_env_file "$PROJECT_NAME")"
+  fi
 
   case "$MODE" in
     base)
       REQUIRE_STRONG_PASSWORD="true"
       choose_project_name
+      snapshot_selected_services
       prompt_common_password
       write_common_password_env
       prompt_ports_for_base
+      prompt_recreate_services
       install_docker_and_runtime
       register_infra_base_env
       init_services_dir
+      prune_disabled_services
       echo "[install] 安装完成，准备启动 infra-base..."
-      bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
+      if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+        bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME" --recreate "$FORCE_RECREATE_SERVICES"
+      else
+        bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME"
+      fi
       ;;
 
     full)
       REQUIRE_STRONG_PASSWORD="true"
       choose_project_name
+      snapshot_selected_services
       validate_bundle_dir
+      print_same_host_restore_notice
+      prompt_common_password
+      write_common_password_env
       prompt_ports_for_base
+      prompt_recreate_services
       install_docker_and_runtime
       register_infra_base_env
       init_services_dir
@@ -737,14 +1069,23 @@ main() {
       normalize_restore_source
       resolve_password_for_source "$RESTORE_SOURCE"
       write_common_password_env
+      prune_disabled_services
 
       if [ "$RESTORE_SOURCE" = "raw" ]; then
         run_restore
         echo "[install] 恢复完成，准备启动 infra-base..."
-        bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
+        if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+          bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME" --recreate "$FORCE_RECREATE_SERVICES"
+        else
+          bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME"
+        fi
       elif [ "$RESTORE_SOURCE" = "logical" ]; then
         echo "[install] 先启动 infra-base，再执行 logical 恢复..."
-        bash "$BASE_DIR/scripts/start.sh" "$PROJECT_NAME"
+        if [ -n "$FORCE_RECREATE_SERVICES" ]; then
+          bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME" --recreate "$FORCE_RECREATE_SERVICES"
+        else
+          bash "$BASE_DIR/scripts/start.sh" --project "$PROJECT_NAME"
+        fi
         run_restore
       else
         echo "[install] 无效的恢复源: $RESTORE_SOURCE" >&2
@@ -755,6 +1096,7 @@ main() {
 
     restore)
       validate_bundle_dir
+      print_same_host_restore_notice
       if [ -z "$RESTORE_SOURCE" ]; then
         detect_restore_source_mode
       fi

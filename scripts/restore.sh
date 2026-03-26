@@ -183,83 +183,114 @@ restore_pg_logical() {
   local pg_dir="$BUNDLE_DIR/data/logical/pg"
   local old_dump_file="$BUNDLE_DIR/data/logical/pg_dumpall.sql"
   local meta_file="$pg_dir/db_meta.tsv"
+  local log_file
+  log_file="$(mktemp)"
 
   if [ -d "$pg_dir" ] && [ -f "$pg_dir/globals.sql" ] && [ -f "$pg_dir/db_list.txt" ]; then
-    log "恢复 PostgreSQL 逻辑备份(pg_restore)..."
-    docker cp "$pg_dir/globals.sql" "$cid:/tmp/pg_globals.sql"
-    docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-      psql -U "$DEFAULT_PG_USER" -d postgres -f /tmp/pg_globals.sql
-    docker exec "$cid" rm -f /tmp/pg_globals.sql >/dev/null 2>&1 || true
+    echo "[postgres] 恢复中..."
+    {
+      docker cp "$pg_dir/globals.sql" "$cid:/tmp/pg_globals.sql"
+      docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+        psql -U "$DEFAULT_PG_USER" -d postgres -f /tmp/pg_globals.sql
+      docker exec "$cid" rm -f /tmp/pg_globals.sql >/dev/null 2>&1 || true
 
-    while IFS= read -r db; do
-      [ -z "$db" ] && continue
-      local dump_file="$pg_dir/${db}.dump"
-      [ -f "$dump_file" ] || { err "缺少 PG 数据库备份文件: $dump_file"; return 1; }
-      local has_tsdb="false"
-      if [ -f "$meta_file" ]; then
-        has_tsdb="$(awk -F'\t' -v d="$db" '$1==d{print $2; exit}' "$meta_file")"
-        [ -n "$has_tsdb" ] || has_tsdb="false"
-      fi
-
-      local db_exists
-      db_exists="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-        psql -t -A -U "$DEFAULT_PG_USER" -d postgres -c "SELECT 1 FROM pg_database WHERE datname='${db}';" | tr -d '[:space:]')"
-      if [ "$db_exists" != "1" ]; then
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          psql -U "$DEFAULT_PG_USER" -d postgres -c "CREATE DATABASE \"${db}\";"
-      fi
-
-      docker cp "$dump_file" "$cid:/tmp/${db}.dump"
-      if [ "$has_tsdb" != "true" ]; then
-        if docker exec "$cid" sh -c "pg_restore -l /tmp/${db}.dump | grep -q 'EXTENSION - timescaledb'" >/dev/null 2>&1; then
-          has_tsdb="true"
+      while IFS= read -r db; do
+        [ -z "$db" ] && continue
+        local dump_file="$pg_dir/${db}.dump"
+        [ -f "$dump_file" ] || { err "缺少 PG 数据库备份文件: $dump_file"; return 1; }
+        local has_tsdb="false"
+        if [ -f "$meta_file" ]; then
+          has_tsdb="$(awk -F'\t' -v d="$db" '$1==d{print $2; exit}' "$meta_file")"
+          [ -n "$has_tsdb" ] || has_tsdb="false"
         fi
-      fi
-      if [ "$has_tsdb" = "true" ]; then
-        log "检测到数据库 $db 启用 timescaledb，启用兼容恢复流程..."
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "SELECT timescaledb_pre_restore();"
 
-        docker exec "$cid" sh -c "pg_restore -l /tmp/${db}.dump > /tmp/${db}.list"
-        docker exec "$cid" sh -c "grep -Ev 'EXTENSION - timescaledb|COMMENT - EXTENSION timescaledb' /tmp/${db}.list > /tmp/${db}.filtered.list"
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          pg_restore -U "$DEFAULT_PG_USER" -d "$db" --clean --if-exists --no-owner --no-privileges -L "/tmp/${db}.filtered.list" "/tmp/${db}.dump"
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "SELECT timescaledb_post_restore();"
-        docker exec "$cid" rm -f "/tmp/${db}.list" "/tmp/${db}.filtered.list" >/dev/null 2>&1 || true
-      else
-        docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-          pg_restore -U "$DEFAULT_PG_USER" -d "$db" --clean --if-exists --no-owner --no-privileges "/tmp/${db}.dump"
-      fi
-      docker exec "$cid" rm -f "/tmp/${db}.dump" >/dev/null 2>&1 || true
-    done < "$pg_dir/db_list.txt"
+        local db_exists
+        db_exists="$(docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+          psql -t -A -U "$DEFAULT_PG_USER" -d postgres -c "SELECT 1 FROM pg_database WHERE datname='${db}';" | tr -d '[:space:]')"
+        if [ "$db_exists" != "1" ]; then
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            psql -U "$DEFAULT_PG_USER" -d postgres -c "CREATE DATABASE \"${db}\";"
+        fi
+
+        docker cp "$dump_file" "$cid:/tmp/${db}.dump"
+        if [ "$has_tsdb" != "true" ]; then
+          if docker exec "$cid" sh -c "pg_restore -l /tmp/${db}.dump | grep -q 'EXTENSION - timescaledb'" >/dev/null 2>&1; then
+            has_tsdb="true"
+          fi
+        fi
+        if [ "$has_tsdb" = "true" ]; then
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "SELECT timescaledb_pre_restore();"
+
+          docker exec "$cid" sh -c "pg_restore -l /tmp/${db}.dump > /tmp/${db}.list"
+          docker exec "$cid" sh -c "grep -Ev 'EXTENSION - timescaledb|COMMENT - EXTENSION timescaledb' /tmp/${db}.list > /tmp/${db}.filtered.list"
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            pg_restore -U "$DEFAULT_PG_USER" -d "$db" --clean --if-exists --no-owner --no-privileges -L "/tmp/${db}.filtered.list" "/tmp/${db}.dump"
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            psql -X -U "$DEFAULT_PG_USER" -d "$db" -c "SELECT timescaledb_post_restore();"
+          docker exec "$cid" rm -f "/tmp/${db}.list" "/tmp/${db}.filtered.list" >/dev/null 2>&1 || true
+        else
+          docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+            pg_restore -U "$DEFAULT_PG_USER" -d "$db" --clean --if-exists --no-owner --no-privileges "/tmp/${db}.dump"
+        fi
+        docker exec "$cid" rm -f "/tmp/${db}.dump" >/dev/null 2>&1 || true
+      done < "$pg_dir/db_list.txt"
+    } >"$log_file" 2>&1 || {
+      echo "[postgres] 恢复失败，详情如下:" >&2
+      cat "$log_file" >&2
+      rm -f "$log_file"
+      return 1
+    }
+    rm -f "$log_file"
+    echo "[postgres] 恢复完成"
     return 0
   fi
 
   # 兼容旧版迁移包（pg_dumpall.sql）
   [ -f "$old_dump_file" ] || { err "缺少 PG dump: $old_dump_file"; return 1; }
-  log "恢复 PostgreSQL 逻辑备份(兼容模式 pg_dumpall.sql)..."
-  docker cp "$old_dump_file" "$cid:/tmp/pg_dumpall.sql"
-  docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
-    psql -U "$DEFAULT_PG_USER" -f /tmp/pg_dumpall.sql
-  docker exec "$cid" rm -f /tmp/pg_dumpall.sql >/dev/null 2>&1 || true
+  echo "[postgres] 恢复中..."
+  {
+    docker cp "$old_dump_file" "$cid:/tmp/pg_dumpall.sql"
+    docker exec -e PGPASSWORD="$DEFAULT_PG_PASSWORD" "$cid" \
+      psql -U "$DEFAULT_PG_USER" -f /tmp/pg_dumpall.sql
+    docker exec "$cid" rm -f /tmp/pg_dumpall.sql >/dev/null 2>&1 || true
+  } >"$log_file" 2>&1 || {
+    echo "[postgres] 恢复失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+  rm -f "$log_file"
+  echo "[postgres] 恢复完成"
 }
 
 restore_mongo_logical() {
   local cid="$1"
   local dump_file="$BUNDLE_DIR/data/logical/mongo.archive.gz"
   [ -f "$dump_file" ] || { err "缺少 Mongo dump: $dump_file"; return 1; }
+  local log_file
+  log_file="$(mktemp)"
 
-  log "恢复 MongoDB 逻辑备份..."
-  docker cp "$dump_file" "$cid:/tmp/mongo.archive.gz"
-  docker exec "$cid" mongorestore \
-    --authenticationDatabase admin \
-    -u "$DEFAULT_MONGO_USER" \
-    -p "$DEFAULT_MONGO_PASSWORD" \
-    --drop --gzip --archive=/tmp/mongo.archive.gz
-  docker exec "$cid" rm -f /tmp/mongo.archive.gz >/dev/null 2>&1 || true
+  echo "[mongo] 恢复中..."
+  {
+    docker cp "$dump_file" "$cid:/tmp/mongo.archive.gz"
+    docker exec "$cid" mongorestore \
+      --authenticationDatabase admin \
+      -u "$DEFAULT_MONGO_USER" \
+      -p "$DEFAULT_MONGO_PASSWORD" \
+      --drop --gzip --archive=/tmp/mongo.archive.gz
+    docker exec "$cid" rm -f /tmp/mongo.archive.gz >/dev/null 2>&1 || true
+  } >"$log_file" 2>&1 || {
+    echo "[mongo] 恢复失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+
+  rm -f "$log_file"
+  echo "[mongo] 恢复完成"
 }
 
 restore_minio_logical() {
@@ -267,17 +298,30 @@ restore_minio_logical() {
   local minio_dir="$BUNDLE_DIR/data/logical/minio"
   local tmp_dir="/tmp/minio-logical-restore"
   [ -d "$minio_dir" ] || { err "缺少 MinIO 逻辑备份目录: $minio_dir"; return 1; }
+  local log_file
+  log_file="$(mktemp)"
 
   if ! docker exec "$minio_cid" sh -c "command -v mc >/dev/null 2>&1"; then
+    rm -f "$log_file"
     err "minio 容器内未找到 mc，无法执行 MinIO 逻辑恢复"
     return 1
   fi
 
-  log "恢复 MinIO 对象(容器内 mc mirror)..."
-  docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir' && mkdir -p '$tmp_dir'"
-  docker cp "$minio_dir/." "$minio_cid:$tmp_dir/"
-  docker exec "$minio_cid" sh -c "mc alias set dst http://127.0.0.1:9000 $DEFAULT_MINIO_USER $DEFAULT_MINIO_PASSWORD >/dev/null && mc mirror --overwrite '$tmp_dir' dst"
-  docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir'" >/dev/null 2>&1 || true
+  echo "[minio] 恢复中..."
+  {
+    docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir' && mkdir -p '$tmp_dir'"
+    docker cp "$minio_dir/." "$minio_cid:$tmp_dir/"
+    docker exec "$minio_cid" sh -c "mc alias set dst http://127.0.0.1:9000 $DEFAULT_MINIO_USER $DEFAULT_MINIO_PASSWORD >/dev/null && mc mirror --overwrite '$tmp_dir' dst"
+    docker exec "$minio_cid" sh -c "rm -rf '$tmp_dir'" >/dev/null 2>&1 || true
+  } >"$log_file" 2>&1 || {
+    echo "[minio] 恢复失败，详情如下:" >&2
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    return 1
+  }
+
+  rm -f "$log_file"
+  echo "[minio] 恢复完成"
 }
 
 import_logical_data() {
